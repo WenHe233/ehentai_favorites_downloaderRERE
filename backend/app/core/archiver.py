@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import dataclass
 import re
 import aiofiles
 from loguru import logger
@@ -8,6 +9,13 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from bs4 import BeautifulSoup
 import httpx
 from app.core.config import settings
+
+
+@dataclass
+class ArchiveDownloadResult:
+    success: bool
+    error_msg: Optional[str] = None
+    should_refresh_url: bool = False
 
 
 class GalleryArchiver:
@@ -283,16 +291,17 @@ class GalleryArchiver:
         is_cancelled: Optional[callable] = None,
         max_retries: int = 3,
         progress_callback: Optional[Callable[..., Awaitable[None] | None]] = None,
-    ) -> bool:
+    ) -> ArchiveDownloadResult:
         """Download a file from URL to the specified path with verification and retry."""
         last_error = None
+        should_refresh_url = False
         
         for attempt in range(max_retries):
             try:
                 # Initial cancellation check
                 if is_cancelled and is_cancelled():
                     logger.info("Archive download cancelled before start")
-                    return False
+                    return ArchiveDownloadResult(success=False, error_msg="归档下载已取消")
                 
                 if attempt > 0:
                     logger.info(f"Retry {attempt}/{max_retries} for archive download")
@@ -311,12 +320,23 @@ class GalleryArchiver:
                     follow_redirects=True
                 ) as client:
                     async with client.stream("GET", download_url) as response:
-                        response.raise_for_status()
+                        try:
+                            response.raise_for_status()
+                        except httpx.HTTPStatusError as exc:
+                            status_code = exc.response.status_code
+                            should_refresh_url = status_code in {403, 404, 410}
+                            if should_refresh_url:
+                                last_error = f"归档下载链接可能已失效（HTTP {status_code}）"
+                            else:
+                                last_error = f"归档下载失败（HTTP {status_code}）"
+                            logger.warning(last_error)
+                            continue
                         
                         # Check content type - should be application/zip or similar
                         content_type = response.headers.get("content-type", "")
                         if "text/html" in content_type:
-                            last_error = f"Download returned HTML instead of ZIP. Content-Type: {content_type}"
+                            should_refresh_url = True
+                            last_error = f"归档下载链接可能已失效，返回了 HTML 页面（Content-Type: {content_type}）"
                             logger.warning(last_error)
                             continue
 
@@ -382,9 +402,10 @@ class GalleryArchiver:
                         async with aiofiles.open(output_path, 'r', encoding='utf-8', errors='ignore') as f:
                             first_bytes = await f.read(200)
                             if '<html' in first_bytes.lower() or '<!doctype' in first_bytes.lower():
-                                last_error = "File appears to be HTML content, not a ZIP"
+                                should_refresh_url = True
+                                last_error = "归档下载链接可能已失效，下载结果是 HTML 页面而不是 ZIP"
                             else:
-                                last_error = "Downloaded file is not a valid ZIP"
+                                last_error = "下载结果不是有效的 ZIP 文件"
                         logger.warning(last_error)
                         continue
 
@@ -399,7 +420,7 @@ class GalleryArchiver:
                     )
                     
                     logger.info(f"Download completed and verified: {output_path}")
-                    return True
+                    return ArchiveDownloadResult(success=True)
                     
             except Exception as e:
                 last_error = str(e)
@@ -407,4 +428,8 @@ class GalleryArchiver:
         
         # All retries failed
         logger.error(f"Error downloading file after {max_retries} attempts: {last_error}")
-        return False
+        return ArchiveDownloadResult(
+            success=False,
+            error_msg=last_error or "归档下载失败",
+            should_refresh_url=should_refresh_url,
+        )

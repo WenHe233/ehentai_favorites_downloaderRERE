@@ -810,33 +810,73 @@ class DownloaderService:
 
                 is_cancelled = lambda: self.is_cancelled(gallery.gid)
                 progress_callback = lambda **payload: self._set_progress(gallery, **payload)
-
-                dl_url, size = await GalleryArchiver.prepare_and_poll(
-                    gid=gallery.gid,
-                    token=gallery.token,
-                    quality=quality_preference,
-                    is_cancelled=is_cancelled,
-                    progress_callback=progress_callback,
-                )
-
-                if self.is_cancelled(gallery.gid):
-                    logger.info(f"Archive download cancelled for {gallery.gid}")
-                    return False
-
-                if not dl_url:
-                    logger.warning(f"Archiver failed for {gallery.gid}, no fallback downloader is configured")
-                    gallery.error_msg = "未能获取归档下载链接"
-                    return False
-
-                logger.info(f"Got download URL for {gallery.gid}, size={size}")
                 max_retries = int(current_settings.get("max_retries", 3))
-                success = await GalleryArchiver.download_file(
-                    dl_url,
-                    str(temp_file),
-                    is_cancelled=is_cancelled,
-                    max_retries=max_retries,
-                    progress_callback=progress_callback,
-                )
+                refresh_attempt = 0
+                max_refresh_attempts = 1
+                success = False
+
+                while True:
+                    dl_url, size = await GalleryArchiver.prepare_and_poll(
+                        gid=gallery.gid,
+                        token=gallery.token,
+                        quality=quality_preference,
+                        is_cancelled=is_cancelled,
+                        progress_callback=progress_callback,
+                    )
+
+                    if self.is_cancelled(gallery.gid):
+                        logger.info(f"Archive download cancelled for {gallery.gid}")
+                        return False
+
+                    if not dl_url:
+                        logger.warning(f"Archiver failed for {gallery.gid}, no fallback downloader is configured")
+                        gallery.error_msg = "未能获取归档下载链接"
+                        return False
+
+                    logger.info(f"Got download URL for {gallery.gid}, size={size}")
+                    result = await GalleryArchiver.download_file(
+                        dl_url,
+                        str(temp_file),
+                        is_cancelled=is_cancelled,
+                        max_retries=max_retries,
+                        progress_callback=progress_callback,
+                    )
+                    success = result.success
+                    if success:
+                        break
+
+                    if temp_file.exists():
+                        temp_file.unlink()
+
+                    if (
+                        result.should_refresh_url
+                        and refresh_attempt < max_refresh_attempts
+                        and not self.is_cancelled(gallery.gid)
+                    ):
+                        refresh_attempt += 1
+                        logger.warning(
+                            f"Archive download URL may have expired for gid={gallery.gid}; "
+                            f"re-requesting ({refresh_attempt}/{max_refresh_attempts})"
+                        )
+                        from app.services.gallery_log import append_gallery_log
+
+                        await append_gallery_log(
+                            gallery.gid,
+                            gallery.token,
+                            "归档链接疑似失效，正在重新申请下载链接",
+                            "warning",
+                        )
+                        await self._set_progress(
+                            gallery,
+                            phase="polling",
+                            percent=12,
+                            detail="归档链接疑似失效，正在重新申请",
+                        )
+                        continue
+
+                    if result.error_msg:
+                        gallery.error_msg = result.error_msg
+                    break
 
                 if success and temp_file.exists():
                     await self._set_progress(

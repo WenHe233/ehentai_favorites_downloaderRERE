@@ -25,9 +25,9 @@
 
 首次使用：
 
-```powershell
+```bash
 cd backend
-Copy-Item config.yaml.example config.yaml
+cp config.yaml.example config.yaml
 ```
 
 重点配置项：
@@ -40,7 +40,7 @@ Copy-Item config.yaml.example config.yaml
 
 ## 本地启动
 
-```powershell
+```bash
 cd backend
 pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -80,14 +80,14 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 ### 自检
 
-```powershell
+```bash
 python scripts/preflight_check.py
 python scripts/preflight_check.py --json
 ```
 
 ### 清理遗留状态
 
-```powershell
+```bash
 python scripts/cleanup_legacy_state.py
 python scripts/cleanup_legacy_state.py --all
 ```

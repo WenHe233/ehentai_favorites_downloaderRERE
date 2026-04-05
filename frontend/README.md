@@ -22,13 +22,13 @@
 
 如果你想手动指定后端地址，可以在启动或构建前设置：
 
-```powershell
-$env:VITE_API_BASE_URL="http://localhost:8000/api/v1"
+```bash
+export VITE_API_BASE_URL="http://localhost:8000/api/v1"
 ```
 
 ## 本地开发
 
-```powershell
+```bash
 cd frontend
 npm install
 npm run dev
@@ -36,7 +36,7 @@ npm run dev
 
 常用命令：
 
-```powershell
+```bash
 npm run lint
 npm run build
 ```

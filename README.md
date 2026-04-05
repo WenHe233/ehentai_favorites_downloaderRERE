@@ -27,16 +27,16 @@
 
 后端：
 
-```powershell
+```bash
 cd backend
-Copy-Item config.yaml.example config.yaml
+cp config.yaml.example config.yaml
 pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 前端：
 
-```powershell
+```bash
 cd frontend
 npm install
 npm run dev
@@ -44,27 +44,27 @@ npm run dev
 
 前端默认使用同源 `/api/v1`。如果你需要直连其他后端地址，可以自行设置：
 
-```powershell
-$env:VITE_API_BASE_URL="http://localhost:8000/api/v1"
+```bash
+export VITE_API_BASE_URL="http://localhost:8000/api/v1"
 ```
 
 ### 方式二：Docker Compose 部署
 
 1. 复制配置模板：
 
-```powershell
-Copy-Item .\backend\config.yaml.example .\backend\config.yaml
+```bash
+cp ./backend/config.yaml.example ./backend/config.yaml
 ```
 
 2. 复制部署示例并按需修改：
 
-```powershell
-Copy-Item .\docker-compose.yml.example .\docker-compose.yml
+```bash
+cp ./docker-compose.yml.example ./docker-compose.yml
 ```
 
 3. 启动：
 
-```powershell
+```bash
 docker compose up -d --build
 ```
 

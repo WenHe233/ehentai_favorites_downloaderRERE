@@ -1,0 +1,50 @@
+# --- OS / Editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# --- Local environments / secrets ---
+.env
+.env.*
+backend/.env
+backend/*.env
+backend/config.yaml
+docker-compose.yml
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.venv/
+venv/
+
+# --- Node / Frontend ---
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/.vite/
+frontend/.eslintcache
+frontend/*.local
+frontend/frontend/
+
+# --- Runtime data / generated artifacts ---
+backend/data/
+backend/downloads/
+backend/downloads.zip
+*.log
+*.pid
+
+# --- Local tooling ---
+.conda/

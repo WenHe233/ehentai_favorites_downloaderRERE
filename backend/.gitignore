@@ -1,0 +1,15 @@
+config.yaml
+.env
+*.env
+__pycache__/
+app/__pycache__/
+app/**/__pycache__/
+data/
+downloads/
+downloads.zip
+*.pyc
+*.pyo
+*.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

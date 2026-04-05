@@ -1,0 +1,142 @@
+# ehentai_favorites_downloaderRERE 配置模板
+#
+# 使用方法：
+# - 复制一份为 `config.yaml` 后再填写真实值。
+# - 修改后重启后端即可生效。
+# - `null` 表示未配置。
+# - 不要把填写了真实 Cookies / Token 的 `config.yaml` 提交到公开仓库。
+
+# 应用显示名称和 API 根路径。通常不需要改动。
+app:
+  # 应用名称，仅用于界面和日志显示。
+  name: 'ehentai_favorites_downloaderRERE'
+  # API 前缀。除非你明确知道影响，否则保持默认。
+  api_v1_str: /api/v1
+
+# 本地数据目录设置。相对路径会以 backend 目录为基准。
+paths:
+  # 数据库、日志等运行数据的目录。
+  data_dir: data
+  # 下载文件保存目录。
+  download_dir: downloads
+  # 数据库连接串。保持 null 时默认使用 data_dir/app.db。
+  database_url: null
+
+# 安全和管理员配置。
+security:
+  # 用于签名内部令牌。正式使用时建议改成随机长字符串。
+  secret_key: changeme_please_to_something_secure
+  # 登录令牌过期时间（分钟）。
+  access_token_expire_minutes: 10080
+  # 是否开启后台接口登录保护。对外部署时建议开启。
+  enable_auth: false
+  # 预留的管理员账号。当前项目主要还是靠本地配置文件管理。
+  admin_username: admin
+  # 预留的管理员密码。若你后续启用登录校验，请务必改掉默认值。
+  admin_password: admin
+  # 允许跨域访问后端的前端地址列表。只部署后端时可留空或仅保留本机地址。
+  cors_allow_origins:
+    - http://localhost:5173
+    - http://127.0.0.1:5173
+
+# E-Hentai / ExHentai Cookies。
+# ExHentai 通常至少需要 ipb_member_id、ipb_pass_hash、igneous。
+auth:
+  # 登录后的 ipb_member_id。
+  ipb_member_id: null
+  # 登录后的 ipb_pass_hash。
+  ipb_pass_hash: null
+  # ExHentai 访问常用的 igneous cookie。
+  igneous: null
+
+# 站点域名。可选：e-hentai.org / exhentai.org。
+site:
+  # 一般先保持 e-hentai.org；确认 Cookies 可用后再切到 exhentai.org。
+  domain: e-hentai.org
+
+# 网络相关配置。
+network:
+  # 代理地址。例如 http://127.0.0.1:7890；不需要时保持 null。
+  proxy_url: null
+  # 请求使用的 User-Agent。一般不需要修改。
+  user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  # HTML 请求间隔秒数，适当放大更稳妥。
+  request_delay: 5.0
+
+# 下载策略。
+download:
+  # 下载模式：archive / native_crawl。
+  mode: archive
+  # 下载质量偏好：original / native。归档模式下 native 对应站点的 resample。
+  archive_quality: original
+  # 最大并发数。archive 模式指画廊并发，native_crawl 模式指图片并发。
+  max_concurrent_downloads: 3
+  # 单个下载任务失败后的最大重试次数。
+  max_retries: 3
+  # 下载输出模板。相对路径以 backend 目录为基准，允许使用子目录和文件名占位符。
+  output_template: './downloads/[{gid}] {title}.zip'
+  # 文件冲突处理：rename 自动追加 _1；overwrite 直接覆盖并清理同任务的临时残留。
+  conflict_strategy: rename
+  # 是否在文件名过长时自动截断。
+  truncate_filenames: true
+  # 文件名最大长度限制。Windows 默认 160，Linux/macOS 默认 220。
+  filename_max_length: 160
+  # 可用占位符：{gid} {title} {jpn_title} {category} {uploader} {filecount} {quality}
+  #            {parent_gid} {downloaded_at:%Y-%m-%d} {favorited_at:%Y-%m-%d} {fav}
+  # 扩展名由模板决定。程序实际写入 ZIP 容器，建议使用 .zip 或 .cbz。
+
+# 收藏同步规则。
+sync:
+  # 自动同步轮询间隔（分钟）。
+  interval_minutes: 60
+  # 是否在后端启动时自动开启定时同步。
+  auto_sync: false
+  # 需要监控的收藏夹编号，范围 0-9。
+  monitored_favcats:
+    - 0
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+  # 仅同步这个时间之后的收藏。格式：YYYY-MM-DD HH:MM；不限制时填 null。
+  fav_oldest_date: null
+  # 时间基准：site 表示站点时区（GMT+0），server 表示本机时区。
+  fav_date_timezone: null
+
+# Telegram Bot 配置。
+telegram:
+  # BotFather 提供的 bot token；不使用时保持 null。
+  bot_token: null
+  # 允许使用 bot 的 Telegram 用户 ID 列表。留空表示不限制，例如 [123456789]。
+  allowed_ids: []
+  # Telegram 主动提醒设置。提醒接收人留空时，会回退到 allowed_ids。
+  notifications:
+    # 是否启用 Bot 主动提醒。
+    enabled: false
+    # 主动提醒接收人列表。留空时使用 allowed_ids。
+    recipients: []
+    # 下载完成时发送提醒。
+    on_download_completed: true
+    # 下载失败时发送提醒。
+    on_download_failed: true
+    # 部分完成（缺页待补抓）时发送提醒。
+    on_download_partial: true
+    # 一轮同步完成后发送摘要提醒。
+    on_sync_completed: true
+    # 同步失败时发送提醒。
+    on_sync_failed: true
+    # 批量聚合窗口（秒）。大于 0 时，窗口内多条提醒会合并成一条摘要。
+    batch_window_seconds: 60
+    # 静默时段（按服务器本地时间）。静默期间的提醒会缓存，结束后统一汇总发送。
+    quiet_hours:
+      # 是否启用静默时段。
+      enabled: false
+      # 静默开始时间，格式 HH:MM。
+      start: '23:00'
+      # 静默结束时间，格式 HH:MM。
+      end: '08:00'

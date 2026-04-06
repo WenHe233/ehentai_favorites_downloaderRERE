@@ -98,6 +98,7 @@ async def list_galleries(
     search: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
+    skip = max(0, skip)
     limit = max(1, min(limit, 200))
 
     filters = []
@@ -170,6 +171,15 @@ async def stream_download_events(request: Request):
                     yield format_sse_event(message["event"], message["payload"])
                 except asyncio.TimeoutError:
                     yield format_sse_event("heartbeat", {"updated_at": utcnow_iso()})
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    yield format_sse_event("error", {"message": str(exc)})
+                    break
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            yield format_sse_event("error", {"message": str(exc)})
         finally:
             await realtime_hub.unsubscribe(queue)
 
@@ -239,8 +249,10 @@ async def delete_gallery_with_files(gid: int, db: AsyncSession = Depends(get_db)
     }
 
 @router.delete("/galleries")
-async def delete_all_galleries(db: AsyncSession = Depends(get_db)):
-    """Delete all galleries from the database."""
+async def delete_all_galleries(confirm: bool = False, db: AsyncSession = Depends(get_db)):
+    """Delete all galleries from the database. Requires confirm=true."""
+    if not confirm:
+        raise HTTPException(status_code=400, detail="Bulk delete requires confirm=true query parameter")
     from sqlalchemy import delete
 
     settled = await downloader.cancel_all_and_wait()

@@ -27,9 +27,9 @@ security:
   # 用于签名内部令牌。正式使用时建议改成随机长字符串。
   secret_key: changeme_please_to_something_secure
   # 登录令牌过期时间（分钟）。
-  access_token_expire_minutes: 10080
+  access_token_expire_minutes: 1440
   # 是否开启后台接口登录保护。对外部署时建议开启。
-  enable_auth: false
+  enable_auth: true
   # 预留的管理员账号。当前项目主要还是靠本地配置文件管理。
   admin_username: admin
   # 预留的管理员密码。若你后续启用登录校验，请务必改掉默认值。
@@ -112,7 +112,7 @@ sync:
 telegram:
   # BotFather 提供的 bot token；不使用时保持 null。
   bot_token: null
-  # 允许使用 bot 的 Telegram 用户 ID 列表。留空表示不限制，例如 [123456789]。
+  # 允许使用 bot 的 Telegram 用户 ID 列表。留空时拒绝所有用户，例如 [123456789]。
   allowed_ids: []
   # Telegram 主动提醒设置。提醒接收人留空时，会回退到 allowed_ids。
   notifications:

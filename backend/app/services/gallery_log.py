@@ -2,7 +2,7 @@
 Gallery log helper for storing per-gallery download logs.
 """
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 from loguru import logger
 
@@ -20,6 +20,7 @@ async def _append_gallery_log_with_session(
 ) -> None:
     g = await session.get(Gallery, (gid, token))
     if not g:
+        logger.warning(f"Gallery ({gid}, {token}) not found, log entry discarded")
         return
 
     existing = []
@@ -47,7 +48,7 @@ async def append_gallery_log(
     """Append a log entry to a gallery's download_logs."""
     try:
         entry = {
-            "time": datetime.utcnow().isoformat(),
+            "time": datetime.now(timezone.utc).isoformat(),
             "level": level,
             "msg": message
         }

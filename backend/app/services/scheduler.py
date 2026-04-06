@@ -32,5 +32,5 @@ def start_scheduler():
 
 def stop_scheduler():
     if scheduler.running:
-        scheduler.shutdown(wait=False)
+        scheduler.shutdown(wait=True)
         logger.info("Scheduler stopped.")

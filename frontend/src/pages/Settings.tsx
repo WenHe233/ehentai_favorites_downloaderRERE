@@ -552,7 +552,7 @@ const Settings: React.FC = () => {
                         <Form.Item
                             label="允许的 Telegram 用户 ID"
                             name="allowed_telegram_ids"
-                            tooltip="留空表示不限制，可直接输入多个数字"
+                            tooltip="留空时拒绝所有用户，可直接输入多个数字"
                         >
                             <Select
                                 mode="tags"

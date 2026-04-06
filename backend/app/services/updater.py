@@ -1,7 +1,7 @@
 import asyncio
 from sqlalchemy.future import select
 from loguru import logger
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
 from app.db.database import SessionLocal
@@ -96,7 +96,7 @@ class UpdaterService:
                 total_processed = 0
                 sync_completed = True
                 sync_state_changed = False
-                start_ts = format_sync_timestamp(datetime.utcnow())
+                start_ts = format_sync_timestamp(datetime.now(timezone.utc))
                 oldest_date = UpdaterService._get_oldest_date_threshold(current_settings)
 
                 for favcat in monitored_favcats:
@@ -120,6 +120,7 @@ class UpdaterService:
                             previous = parse_sync_timestamp(sync_state["last_favorited"].get(state_key))
                             if previous is None or latest_favorited > previous:
                                 sync_state["last_favorited"][state_key] = format_sync_timestamp(latest_favorited)
+                                await write_sync_state(sync_state)
                                 sync_state_changed = True
                     else:
                         sync_completed = False
@@ -214,7 +215,7 @@ class UpdaterService:
                             gid=gid,
                             token=token,
                             title=item["title"],
-                            posted=datetime.utcnow(), 
+                            posted=datetime.now(timezone.utc), 
                             filecount=0, 
                             status=DownloadStatus.PENDING,
                             favorited_at=favorited_at,
@@ -276,7 +277,7 @@ class UpdaterService:
                         g.filecount = int(meta.get("filecount") or g.filecount or 0)
                         posted_raw = meta.get("posted")
                         if posted_raw:
-                            g.posted = datetime.utcfromtimestamp(int(posted_raw))
+                            g.posted = datetime.fromtimestamp(int(posted_raw), tz=timezone.utc)
                         g.tags = meta.get("tags") or g.tags
                         g.title = meta.get("title") or g.title
                         g.title_jpn = meta.get("title_jpn") or g.title_jpn
@@ -336,48 +337,48 @@ class UpdaterService:
         """
         Batch check metadata for existing galleries via API.
         Update filecount and posted time.
+        Processes in paginated chunks to avoid loading all galleries into memory.
         """
-        async with SessionLocal() as session:
-            # Select all galleries, maybe chunked
-            stmt = select(Gallery)
-            result = await session.execute(stmt)
-            galleries = result.scalars().all()
-            
-        if not galleries:
-            return
-            
-        # Chunk into 25
         chunk_size = 25
-        for i in range(0, len(galleries), chunk_size):
-            chunk = galleries[i:i+chunk_size]
+        offset = 0
+
+        while True:
+            async with SessionLocal() as session:
+                stmt = select(Gallery).order_by(Gallery.gid).offset(offset).limit(chunk_size)
+                result = await session.execute(stmt)
+                galleries = result.scalars().all()
+
+            if not galleries:
+                break
+
+            offset += len(galleries)
+
             payload = {
                 "method": "gdata",
-                "gidlist": [[g.gid, g.token] for g in chunk],
+                "gidlist": [[g.gid, g.token] for g in galleries],
                 "namespace": 1
             }
-            
+
             try:
                 data = await eh_client.post_api(payload)
                 meta_list = data.get("gmetadata", [])
-                
+
                 async with SessionLocal() as session:
                     async with session.begin():
                         for meta in meta_list:
                             gid = meta["gid"]
                             token = meta["token"]
                             filecount = int(meta["filecount"])
-                            posted = datetime.utcfromtimestamp(int(meta["posted"]))
+                            posted = datetime.fromtimestamp(int(meta["posted"]), tz=timezone.utc)
                             tags = meta.get("tags", [])
-                            
-                            # Find local
+
                             g = await session.get(Gallery, (gid, token))
                             if g:
-                                # Check for update
                                 if g.filecount != 0 and g.filecount < filecount:
                                     logger.info(f"Update detected for {gid}: {g.filecount} -> {filecount}")
                                     g.status = DownloadStatus.OUTDATED
                                     g.error_msg = "Filecount increased"
-                                
+
                                 g.filecount = filecount
                                 g.posted = posted
                                 g.tags = tags
@@ -385,8 +386,8 @@ class UpdaterService:
                                 g.category = meta["category"]
                                 g.uploader = meta["uploader"]
                                 g.rating = float(meta["rating"])
-                                g.last_checked = datetime.utcnow()
-                                
+                                g.last_checked = datetime.now(timezone.utc)
+
                     await session.commit()
             except Exception as e:
                 logger.error(f"API Check failed: {e}")

@@ -411,9 +411,10 @@ class GalleryArchiver:
                                 continue
                     except zipfile.BadZipFile:
                         # Try to read first bytes to debug
-                        async with aiofiles.open(output_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        async with aiofiles.open(output_path, 'rb') as f:
                             first_bytes = await f.read(200)
-                            if '<html' in first_bytes.lower() or '<!doctype' in first_bytes.lower():
+                            first_text = first_bytes.decode('utf-8', errors='ignore').lower()
+                            if '<html' in first_text or '<!doctype' in first_text:
                                 should_refresh_url = True
                                 last_error = "归档下载链接可能已失效，下载结果是 HTML 页面而不是 ZIP"
                             else:

@@ -858,7 +858,7 @@ class NotificationService:
             NotificationEvent(
                 event_id=str(uuid4()),
                 kind="download_completed",
-                created_at=downloaded_at or gallery.downloaded_at or datetime.utcnow(),
+                created_at=downloaded_at or gallery.downloaded_at or datetime.now(timezone.utc),
                 title=self._format_title(gallery),
                 gid=gallery.gid,
                 requested_quality=requested_quality,
@@ -885,7 +885,7 @@ class NotificationService:
             NotificationEvent(
                 event_id=str(uuid4()),
                 kind="download_failed",
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
                 title=self._format_title(gallery),
                 gid=gallery.gid,
                 requested_quality=requested_quality,
@@ -913,7 +913,7 @@ class NotificationService:
             NotificationEvent(
                 event_id=str(uuid4()),
                 kind="download_partial",
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
                 title=self._format_title(gallery),
                 gid=gallery.gid,
                 requested_quality=requested_quality,
@@ -943,7 +943,7 @@ class NotificationService:
             NotificationEvent(
                 event_id=str(uuid4()),
                 kind="sync_completed",
-                created_at=last_sync_ts or datetime.utcnow(),
+                created_at=last_sync_ts or datetime.now(timezone.utc),
                 domain=domain,
                 monitored_favcats=list(monitored_favcats),
                 total_processed=total_processed,
@@ -967,7 +967,7 @@ class NotificationService:
             NotificationEvent(
                 event_id=str(uuid4()),
                 kind="sync_failed",
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
                 domain=domain,
                 monitored_favcats=list(monitored_favcats or []),
                 error_msg=error_msg,

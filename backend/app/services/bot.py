@@ -128,7 +128,8 @@ async def is_allowed(user_id: int) -> bool:
     runtime_settings = await _get_runtime_settings()
     allowed_ids = runtime_settings.get("allowed_telegram_ids") or settings.ALLOWED_TELEGRAM_IDS
     if not allowed_ids:
-        return True
+        logger.warning("No allowed_telegram_ids configured, denying all Telegram users by default")
+        return False
     return user_id in {int(item) for item in allowed_ids if str(item).strip()}
 
 async def start_bot():
@@ -147,10 +148,10 @@ async def start_bot():
     bot = Bot(token=token)
     dp = Dispatcher()
     _register_handlers(dp)
-    _polling_task = asyncio.current_task()
 
     logger.info("Starting Telegram Bot polling...")
     try:
+        _polling_task = asyncio.current_task()
         await dp.start_polling(bot)
     except asyncio.CancelledError:
         logger.info("Telegram Bot polling cancelled.")
@@ -167,6 +168,12 @@ async def start_bot():
 
 async def stop_bot():
     global bot, dp, _polling_task
+
+    if dp:
+        try:
+            await dp.stop_polling()
+        except Exception as e:
+            logger.debug(f"dp.stop_polling() skipped: {e}")
 
     task = _polling_task
     if task and not task.done() and task is not asyncio.current_task():

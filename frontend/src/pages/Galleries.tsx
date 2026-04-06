@@ -356,7 +356,7 @@ const Galleries: React.FC = () => {
 
     const handleDeleteAll = async () => {
         try {
-            await api.delete('/galleries');
+            await api.delete('/galleries', { params: { confirm: true } });
             message.success('所有画廊已删除');
             setSelectedRowKeys([]);
             setCurrentPage(1);

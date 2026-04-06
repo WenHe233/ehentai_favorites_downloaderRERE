@@ -314,6 +314,8 @@ class NativeCrawler:
             logger.error(f"Invalid gallery URL: {url}")
             return GalleryDownloadResult(False, None, "无效的画廊链接")
 
+        overall_quality = preferred_quality
+
         gid = match.group(1)
         logger.info(f"[NativeCrawler] Starting download for {url} (concurrent: {max_concurrent_images})")
 
@@ -507,7 +509,7 @@ class NativeCrawler:
                     NativeCrawler.cleanup_resume_artifacts(int(gid))
                     return GalleryDownloadResult(False, None, "下载文件缺失，无法打包", quality=overall_quality)
 
-                completed_at = datetime.utcnow()
+                completed_at = datetime.now(timezone.utc)
                 resolved_output_context["quality"] = overall_quality
                 resolved_output_context["downloaded_at"] = completed_at
                 active_template_settings = output_template_settings or OutputTemplateSettings(
@@ -591,10 +593,10 @@ class NativeCrawler:
                 raise
         except asyncio.CancelledError:
             logger.info(f"[NativeCrawler] Download task cancelled for {gid}")
-            return GalleryDownloadResult(False, None, "下载已取消", quality=overall_quality if "overall_quality" in locals() else preferred_quality)
+            return GalleryDownloadResult(False, None, "下载已取消", quality=overall_quality)
         except Exception as e:
             logger.error(f"[NativeCrawler] Error downloading {url}: {e}")
-            return GalleryDownloadResult(False, None, str(e), quality=overall_quality if "overall_quality" in locals() else preferred_quality)
+            return GalleryDownloadResult(False, None, str(e), quality=overall_quality)
 
     @staticmethod
     async def _get_page_urls(gallery_url: str, first_page_soup: BeautifulSoup) -> List[str]:

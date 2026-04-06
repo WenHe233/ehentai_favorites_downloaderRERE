@@ -1,8 +1,7 @@
 from app.core.config import settings
 import asyncio
-import logging
+from loguru import logger
 
-logger = logging.getLogger(__name__)
 SECRET_FIELDS = {"ipb_member_id", "ipb_pass_hash", "igneous", "telegram_bot_token"}
 
 class ConfigService:

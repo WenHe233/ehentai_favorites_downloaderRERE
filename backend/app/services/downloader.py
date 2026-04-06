@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from sqlalchemy.future import select
 from loguru import logger
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, Set, List
 
 from app.db.database import SessionLocal
@@ -46,10 +46,29 @@ class DownloaderService:
 
         current_settings = await config_service.get_all_settings()
         new_max_concurrent = max(1, int(current_settings.get("max_concurrent_downloads", 3)))
-        if self._semaphore is None or new_max_concurrent != self._max_concurrent:
+        if self._semaphore is None:
             self._max_concurrent = new_max_concurrent
             self._semaphore = asyncio.Semaphore(self._max_concurrent)
-            logger.info(f"Max concurrent downloads updated: {self._max_concurrent}")
+            logger.info(f"Max concurrent downloads set: {self._max_concurrent}")
+        elif new_max_concurrent != self._max_concurrent:
+            old_max = self._max_concurrent
+            self._max_concurrent = new_max_concurrent
+            # Adjust semaphore capacity by releasing or acquiring the difference.
+            # This is safe because we only touch the internal counter.
+            diff = new_max_concurrent - old_max
+            if diff > 0:
+                for _ in range(diff):
+                    self._semaphore.release()
+            elif diff < 0:
+                # Reducing capacity: acquire permits so fewer are available.
+                # Use non-blocking try to avoid deadlock; if permits aren't
+                # available right now, the reduction takes effect as tasks finish.
+                for _ in range(-diff):
+                    acquired = self._semaphore._value > 0  # noqa: SLF001
+                    if acquired:
+                        # Manually decrement the internal counter
+                        self._semaphore._value -= 1  # noqa: SLF001
+            logger.info(f"Max concurrent downloads updated: {old_max} -> {new_max_concurrent}")
         return current_settings
 
     @staticmethod
@@ -78,18 +97,32 @@ class DownloaderService:
             
     async def stop(self):
         self.is_running = False
+        # Cancel all active downloads and wait for them to finish
+        active_gids = [gid for gid, task in self._active_downloads.items() if not task.done()]
+        if active_gids:
+            logger.info(f"Stopping downloader: cancelling {len(active_gids)} active download(s)...")
+            for gid in active_gids:
+                self._cancelled_gids.add(gid)
+                task = self._active_downloads.get(gid)
+                if task and not task.done():
+                    task.cancel()
+            # Wait for all tasks to finish with a timeout
+            tasks = [t for t in self._active_downloads.values() if not t.done()]
+            if tasks:
+                done, pending = await asyncio.wait(tasks, timeout=15.0)
+                if pending:
+                    logger.warning(f"{len(pending)} download task(s) did not finish within timeout")
         logger.info("Downloader Service stopped.")
     
     def cancel_download(self, gid: int) -> bool:
         """Mark a gid as cancelled. Returns True if was actively downloading."""
         self._cancelled_gids.add(gid)
-        if gid in self._active_downloads:
-            task = self._active_downloads[gid]
-            if not task.done():
-                asyncio.create_task(realtime_hub.emit_cancelled(gid))
-                task.cancel()
-                logger.info(f"Cancelled active download for gid={gid}")
-                return True
+        task = self._active_downloads.get(gid)
+        if task and not task.done():
+            asyncio.create_task(realtime_hub.emit_cancelled(gid))
+            task.cancel()
+            logger.info(f"Cancelled active download for gid={gid}")
+            return True
         return False
 
     def is_active(self, gid: int) -> bool:
@@ -421,10 +454,16 @@ class DownloaderService:
                     g.status = DownloadStatus.DOWNLOADING
                 await session.commit()
                 
-                # Start concurrent downloads
+                # Start concurrent downloads; revert status on task creation failure
                 for g in galleries:
                     self.clear_cancelled(g.gid)
-                    task = asyncio.create_task(self._download_with_semaphore(g, mode))
+                    try:
+                        task = asyncio.create_task(self._download_with_semaphore(g, mode))
+                    except Exception as exc:
+                        logger.error(f"Failed to create download task for gid={g.gid}: {exc}")
+                        g.status = DownloadStatus.PENDING
+                        await session.commit()
+                        continue
                     self._active_downloads[g.gid] = task
         else:
             # Sequential mode for native_crawl
@@ -465,7 +504,7 @@ class DownloaderService:
                             g.resolved_quality = result_resolved_quality
                             if result_status == DownloadStatus.COMPLETED.value:
                                 g.status = DownloadStatus.COMPLETED
-                                g.downloaded_at = result_downloaded_at or datetime.utcnow()
+                                g.downloaded_at = result_downloaded_at or datetime.now(timezone.utc)
                                 g.download_path = getattr(gallery, "download_path", None)
                                 g.error_msg = None
                                 g.retry_count = 0
@@ -641,9 +680,8 @@ class DownloaderService:
                                 resolved_quality=getattr(gallery, "_result_quality", None),
                             )
             finally:
-                self._active_count -= 1
-                if gallery.gid in self._active_downloads:
-                    del self._active_downloads[gallery.gid]
+                self._active_count = max(0, self._active_count - 1)
+                self._active_downloads.pop(gallery.gid, None)
 
     async def _process_queue(self):
         async with SessionLocal() as session:
@@ -719,7 +757,7 @@ class DownloaderService:
                         g.resolved_quality = result_resolved_quality
                         if result_status == DownloadStatus.COMPLETED.value:
                             g.status = DownloadStatus.COMPLETED
-                            g.downloaded_at = result_downloaded_at or datetime.utcnow()
+                            g.downloaded_at = result_downloaded_at or datetime.now(timezone.utc)
                             g.download_path = getattr(gallery, "download_path", None)
                             g.error_msg = None
                             g.retry_count = 0
@@ -897,9 +935,8 @@ class DownloaderService:
                             resolved_quality=getattr(gallery, "_result_quality", None),
                         )
         finally:
-            self._active_count -= 1  # Done downloading
-            if self._active_downloads.get(gid) is asyncio.current_task():
-                del self._active_downloads[gid]
+            self._active_count = max(0, self._active_count - 1)
+            self._active_downloads.pop(gid, None)
 
     async def _download_gallery(self, gallery: Gallery, mode: str) -> bool:
         """
@@ -1022,7 +1059,7 @@ class DownloaderService:
                         percent=99,
                         detail="移动归档文件到目标位置",
                     )
-                    completed_at = datetime.utcnow()
+                    completed_at = datetime.now(timezone.utc)
                     final_file, partial_file = resolve_output_targets(
                         settings=output_template_settings,
                         context=self._build_output_context(
@@ -1080,7 +1117,7 @@ class DownloaderService:
                 if result.success:
                     gallery._result_status = DownloadStatus.COMPLETED.value
                     gallery._result_detail = "下载完成"
-                    gallery._result_downloaded_at = result.completed_at or datetime.utcnow()
+                    gallery._result_downloaded_at = result.completed_at or datetime.now(timezone.utc)
                     return True
 
                 partial_progress = None

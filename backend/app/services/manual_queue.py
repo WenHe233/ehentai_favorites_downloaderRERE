@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from loguru import logger
@@ -58,7 +58,7 @@ async def _fetch_gallery_metadata(url: str) -> tuple[int, str, dict, bool]:
         "category": "Manual",
         "uploader": None,
         "filecount": 0,
-        "posted": datetime.utcnow(),
+        "posted": datetime.now(timezone.utc),
         "tags": None,
     }
 
@@ -106,7 +106,7 @@ def _apply_metadata(gallery: Gallery, metadata: dict, *, original_gid: int, has_
     gallery.category = metadata.get("category") or gallery.category or "Manual"
     gallery.uploader = metadata.get("uploader") or gallery.uploader
     gallery.filecount = int(metadata.get("filecount") or gallery.filecount or 0)
-    gallery.posted = metadata.get("posted") or gallery.posted or datetime.utcnow()
+    gallery.posted = metadata.get("posted") or gallery.posted or datetime.now(timezone.utc)
     gallery.tags = metadata.get("tags") or gallery.tags
     gallery.download_mode = download_mode
     gallery.parent_gid = str(original_gid) if has_newer_version else None
@@ -190,7 +190,7 @@ async def queue_manual_gallery(url: str, db: AsyncSession) -> ManualQueueResult:
         title_jpn=metadata.get("title_jpn"),
         category=metadata.get("category") or "Manual",
         uploader=metadata.get("uploader"),
-        posted=metadata.get("posted") or datetime.utcnow(),
+        posted=metadata.get("posted") or datetime.now(timezone.utc),
         filecount=int(metadata.get("filecount") or 0),
         tags=metadata.get("tags"),
         status=DownloadStatus.PENDING,

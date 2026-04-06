@@ -5,6 +5,7 @@ import shutil
 from typing import Any, Dict, Optional
 
 import yaml
+from loguru import logger
 
 from app.core.output_template import (
     OutputTemplateError,
@@ -30,8 +31,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "security": {
         "secret_key": "changeme_please_to_something_secure",
-        "access_token_expire_minutes": 10080,
-        "enable_auth": False,
+        "access_token_expire_minutes": 1440,
+        "enable_auth": True,
         "admin_username": "admin",
         "admin_password": "admin",
         "cors_allow_origins": [
@@ -319,7 +320,7 @@ def _render_commented_config(payload: Dict[str, Any]) -> str:
         "  # BotFather 提供的 bot token；不使用时保持 null。",
     ])
     lines.extend(_render_key_value("bot_token", cfg["telegram"]["bot_token"], 1))
-    lines.append("  # 允许使用 bot 的 Telegram 用户 ID 列表。留空表示不限制，例如 [123456789]。")
+    lines.append("  # 允许使用 bot 的 Telegram 用户 ID 列表。留空时拒绝所有用户，例如 [123456789]。")
     lines.extend(_render_key_value("allowed_ids", cfg["telegram"]["allowed_ids"], 1))
     lines.append("  # 通知提醒设置。通知接收人留空时，会回退到 allowed_ids。")
     lines.append("  notifications:")
@@ -358,6 +359,7 @@ class Settings:
         self.CONFIG_PATH = CONFIG_PATH
         self.CONFIG_EXAMPLE_PATH = CONFIG_EXAMPLE_PATH
         self._raw_config: Dict[str, Any] = {}
+        self._config_mtime: float = 0.0
         self.reload()
 
     def _ensure_config_file(self) -> None:
@@ -510,9 +512,40 @@ class Settings:
             telegram_quiet_hours_cfg.get("end")
         ) or "08:00"
 
-    def reload(self) -> Dict[str, Any]:
+    def reload(self, force: bool = False) -> Dict[str, Any]:
+        if not force and self._raw_config:
+            try:
+                current_mtime = self.CONFIG_PATH.stat().st_mtime
+                if current_mtime == self._config_mtime:
+                    return deepcopy(self._raw_config)
+            except OSError:
+                pass
         config_data = _deep_merge(DEFAULT_CONFIG, self._read_yaml())
+        # Auto-generate a random secret_key if user hasn't changed the default
+        security_cfg = config_data.get("security", {})
+        config_changed = False
+        if security_cfg.get("secret_key") == "changeme_please_to_something_secure":
+            import secrets as _secrets
+            new_key = _secrets.token_urlsafe(48)
+            security_cfg["secret_key"] = new_key
+            config_changed = True
+        # Auto-generate a random admin password if still using default
+        if security_cfg.get("admin_password") == "admin" and security_cfg.get("enable_auth", True):
+            import secrets as _secrets
+            new_password = _secrets.token_urlsafe(16)
+            security_cfg["admin_password"] = new_password
+            config_changed = True
+            logger.warning(
+                f"Default admin password detected. Auto-generated new password: {new_password}  "
+                "Please save this password or change it in config.yaml."
+            )
+        if config_changed:
+            self._write_yaml(config_data)
         self._apply(config_data)
+        try:
+            self._config_mtime = self.CONFIG_PATH.stat().st_mtime
+        except OSError:
+            self._config_mtime = 0.0
         return deepcopy(self._raw_config)
 
     def _set_nested(self, payload: Dict[str, Any], path: tuple[str, ...], value: Any) -> None:
@@ -545,7 +578,7 @@ class Settings:
         )
         _validate_notification_settings(config_data)
         self._write_yaml(config_data)
-        self.reload()
+        self.reload(force=True)
         return self.get_runtime_settings()
 
     def get_runtime_settings(self) -> Dict[str, Any]:

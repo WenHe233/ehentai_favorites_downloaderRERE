@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, JSON, 
 from sqlalchemy.sql import func
 from app.db.database import Base
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 
 class DownloadStatus(str, enum.Enum):
     PENDING = "pending"
@@ -46,7 +46,7 @@ class Gallery(Base):
     # Update Tracking
     parent_gid = Column(String, nullable=True)
     replaced_by = Column(String, nullable=True) # "newer version" URL or GID
-    last_checked = Column(DateTime, default=datetime.utcnow)
+    last_checked = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Error tracking
     error_msg = Column(Text, nullable=True)
@@ -55,8 +55,8 @@ class Gallery(Base):
     # Download logs (JSON array of log entries)
     download_logs = Column(Text, nullable=True)  # JSON serialized log entries
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 class User(Base):
     __tablename__ = "users"
@@ -76,4 +76,4 @@ class AppConfig(Base):
     
     key = Column(String, primary_key=True)
     value = Column(String) # JSON serialized value
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

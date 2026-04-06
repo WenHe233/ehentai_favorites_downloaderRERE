@@ -16,7 +16,7 @@ logger.add(
     format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
     level="INFO",
 )
-logger.add(settings.DATA_DIR / "app.log", rotation="10 MB", level="DEBUG")
+logger.add(settings.DATA_DIR / "app.log", rotation="10 MB", level="INFO")
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -43,7 +43,7 @@ from app.services.scheduler import start_scheduler
 from app.services.notification_service import NOTIFICATION_BUFFER_KEY, notification_service
 from app.services.startup_recovery import startup_recovery_service
 
-from app.services.bot import start_bot
+from app.services.bot import start_bot, stop_bot
 from app.services.config_service import config_service
 
 app.include_router(auth_router, prefix=settings.API_V1_STR)
@@ -124,4 +124,24 @@ async def startup_event():
         asyncio.create_task(start_bot())
     
     logger.info("Application startup complete.")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("Application shutdown initiated...")
+
+    from app.services.scheduler import stop_scheduler
+    stop_scheduler()
+
+    await stop_bot()
+
+    await downloader.stop()
+
+    from app.core.client import eh_client
+    await eh_client.close()
+
+    from app.db.database import engine
+    await engine.dispose()
+
+    logger.info("Application shutdown complete.")
 

@@ -1,6 +1,6 @@
 import asyncio
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from typing import Any, Dict, Optional, Tuple
 
@@ -224,7 +224,7 @@ async def restore_failed_galleries(
                         token=info.get("token") or "",
                         title=info.get("title") or f"Gallery {gid}",
                         category="Retry",
-                        posted=favorited_at or datetime.utcnow(),
+                        posted=favorited_at or datetime.now(timezone.utc),
                         filecount=0,
                         status=DownloadStatus.PENDING,
                         priority=10,

@@ -48,3 +48,4 @@ backend/downloads.zip
 
 # --- Local tooling ---
 .conda/
+dev/

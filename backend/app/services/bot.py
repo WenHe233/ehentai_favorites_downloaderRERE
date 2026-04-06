@@ -34,7 +34,7 @@ async def _get_runtime_settings() -> dict:
 def _register_handlers(dispatcher: Dispatcher) -> None:
     @dispatcher.message(Command("start"))
     async def cmd_start(message: Message):
-        if not is_allowed(message.from_user.id):
+        if not await is_allowed(message.from_user.id):
             return
         await message.answer(
             "👋 您好！EH 收藏夹同步助手已就绪。\n"
@@ -44,7 +44,7 @@ def _register_handlers(dispatcher: Dispatcher) -> None:
 
     @dispatcher.message(Command("status"))
     async def cmd_status(message: Message):
-        if not is_allowed(message.from_user.id):
+        if not await is_allowed(message.from_user.id):
             return
 
         runtime_settings = await _get_runtime_settings()
@@ -61,7 +61,7 @@ def _register_handlers(dispatcher: Dispatcher) -> None:
 
     @dispatcher.message(Command("download"))
     async def cmd_download(message: Message):
-        if not is_allowed(message.from_user.id):
+        if not await is_allowed(message.from_user.id):
             return
 
         args = (message.text or "").split(maxsplit=1)
@@ -124,10 +124,12 @@ def _register_handlers(dispatcher: Dispatcher) -> None:
             logger.error(f"Telegram download error: {e}")
             await message.answer(f"❌ 添加失败: {str(e)}")
 
-def is_allowed(user_id: int) -> bool:
-    if not settings.ALLOWED_TELEGRAM_IDS:
+async def is_allowed(user_id: int) -> bool:
+    runtime_settings = await _get_runtime_settings()
+    allowed_ids = runtime_settings.get("allowed_telegram_ids") or settings.ALLOWED_TELEGRAM_IDS
+    if not allowed_ids:
         return True
-    return user_id in settings.ALLOWED_TELEGRAM_IDS
+    return user_id in {int(item) for item in allowed_ids if str(item).strip()}
 
 async def start_bot():
     global bot, dp, _polling_task
@@ -141,8 +143,6 @@ async def start_bot():
     if not token:
         logger.warning("Telegram Token not set. Bot is disabled.")
         return
-
-    settings.ALLOWED_TELEGRAM_IDS = runtime_settings.get("allowed_telegram_ids") or settings.ALLOWED_TELEGRAM_IDS
 
     bot = Bot(token=token)
     dp = Dispatcher()

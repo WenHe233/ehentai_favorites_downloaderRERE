@@ -31,8 +31,9 @@ Authorization: Bearer <token>
 
 常见字段：
 
-- `galleries`
-- `sync`
+- `active_galleries`
+- `sync_status`
+- `downloader_running`
 - `updated_at`
 
 ### `gallery_progress`
@@ -77,7 +78,7 @@ Authorization: Bearer <token>
 常见字段：
 
 - `sync_running`
-- `last_sync_error`
+- `sync_last_error`
 - `last_sync_ts`
 
 ### `heartbeat`

@@ -191,6 +191,11 @@ async def delete_gallery(gid: int, db: AsyncSession = Depends(get_db)):
     gallery = result.scalar_one_or_none()
     if not gallery:
         raise HTTPException(status_code=404, detail="Gallery not found")
+
+    settled = await downloader.cancel_and_wait(gid)
+    if not settled:
+        raise HTTPException(status_code=409, detail="Active download did not stop in time")
+
     await db.delete(gallery)
     await db.commit()
     await clear_failed_gallery(gid)
@@ -205,14 +210,19 @@ async def delete_gallery_with_files(gid: int, db: AsyncSession = Depends(get_db)
     gallery = result.scalar_one_or_none()
     if not gallery:
         raise HTTPException(status_code=404, detail="Gallery not found")
-    
-    # Cancel active download if any
-    was_active = downloader.cancel_download(gid)
+
+    current_settings = settings.get_runtime_settings()
+    was_active = downloader.is_active(gid)
+    settled = await downloader.cancel_and_wait(gid)
+    if not settled:
+        raise HTTPException(status_code=409, detail="Active download did not stop in time")
     
     # Delete files
     deleted_files = downloader.delete_gallery_files(
         gid,
         known_paths=[gallery.download_path] if gallery.download_path else None,
+        gallery=gallery,
+        current_settings=current_settings,
     )
     
     # Delete record
@@ -232,6 +242,11 @@ async def delete_gallery_with_files(gid: int, db: AsyncSession = Depends(get_db)
 async def delete_all_galleries(db: AsyncSession = Depends(get_db)):
     """Delete all galleries from the database."""
     from sqlalchemy import delete
+
+    settled = await downloader.cancel_all_and_wait()
+    if not settled:
+        raise HTTPException(status_code=409, detail="Active downloads did not stop in time")
+
     stmt = delete(Gallery)
     await db.execute(stmt)
     await db.commit()
@@ -248,11 +263,17 @@ async def reset_gallery(gid: int, db: AsyncSession = Depends(get_db)):
     gallery = result.scalar_one_or_none()
     if not gallery:
         raise HTTPException(status_code=404, detail="Gallery not found")
+
+    settled = await downloader.cancel_and_wait(gid)
+    if not settled:
+        raise HTTPException(status_code=409, detail="Active download did not stop in time")
+
     gallery.status = DownloadStatus.PENDING
     gallery.error_msg = None
     gallery.requested_quality = None
     gallery.resolved_quality = None
     await db.commit()
+    await clear_failed_gallery(gid)
     await realtime_hub.clear_gallery(gid)
     return {"status": "Reset", "gid": gid}
 

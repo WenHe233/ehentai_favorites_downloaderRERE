@@ -16,6 +16,7 @@ class ArchiveDownloadResult:
     success: bool
     error_msg: Optional[str] = None
     should_refresh_url: bool = False
+    cancelled: bool = False
 
 
 class GalleryArchiver:
@@ -70,6 +71,15 @@ class GalleryArchiver:
             return settings.EH_DOMAIN
 
     @staticmethod
+    async def _get_proxy_url() -> Optional[str]:
+        try:
+            from app.services.config_service import config_service
+            db_settings = await config_service.get_all_settings()
+            return db_settings.get("proxy_url") or settings.PROXY_URL
+        except Exception:
+            return settings.PROXY_URL
+
+    @staticmethod
     def _ensure_start_param(url: str) -> str:
         """
         Ensure hath.network archive URLs have start=1 parameter.
@@ -121,10 +131,11 @@ class GalleryArchiver:
             unit="steps",
             detail="准备归档下载",
         )
+        proxy_url = await GalleryArchiver._get_proxy_url()
         
         async with httpx.AsyncClient(
             cookies=cookies, 
-            proxy=settings.PROXY_URL,
+            proxy=proxy_url,
             timeout=30.0, 
             follow_redirects=True
         ) as client:
@@ -301,7 +312,7 @@ class GalleryArchiver:
                 # Initial cancellation check
                 if is_cancelled and is_cancelled():
                     logger.info("Archive download cancelled before start")
-                    return ArchiveDownloadResult(success=False, error_msg="归档下载已取消")
+                    return ArchiveDownloadResult(success=False, error_msg="归档下载已取消", cancelled=True)
                 
                 if attempt > 0:
                     logger.info(f"Retry {attempt}/{max_retries} for archive download")
@@ -312,10 +323,11 @@ class GalleryArchiver:
                 
                 logger.info(f"Downloading archive from: {download_url}")
                 cookies = await GalleryArchiver._get_cookies()
+                proxy_url = await GalleryArchiver._get_proxy_url()
                 
                 async with httpx.AsyncClient(
                     cookies=cookies,
-                    proxy=settings.PROXY_URL,
+                    proxy=proxy_url,
                     timeout=600.0,  # 10 minutes for large files
                     follow_redirects=True
                 ) as client:
@@ -359,7 +371,7 @@ class GalleryArchiver:
                                 # Check cancellation during download
                                 if is_cancelled and is_cancelled():
                                     logger.info("Archive download cancelled during transfer")
-                                    return False
+                                    return ArchiveDownloadResult(success=False, error_msg="归档下载已取消", cancelled=True)
                                 downloaded_bytes += len(chunk)
                                 await f.write(chunk)
                                 if total_bytes:

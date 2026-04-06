@@ -110,6 +110,8 @@ class UpdaterService:
                         logger.info(f"No new galleries found for favcat {favcat}")
 
                     processed_count, latest_favorited = await UpdaterService._process_items(items)
+                    if items:
+                        await UpdaterService._refresh_metadata_for_items(items)
                     total_processed += processed_count
 
                     if completed:
@@ -231,6 +233,59 @@ class UpdaterService:
             await session.commit()
 
         return len(items), latest_favorited
+
+    @staticmethod
+    async def _refresh_metadata_for_items(items: List[dict]) -> None:
+        if not items:
+            return
+
+        chunk_size = 25
+        gidlist = []
+        seen: set[tuple[int, str]] = set()
+        for item in items:
+            gid = int(item["gid"])
+            token = str(item["token"])
+            key = (gid, token)
+            if key in seen:
+                continue
+            seen.add(key)
+            gidlist.append([gid, token])
+
+        for index in range(0, len(gidlist), chunk_size):
+            payload = {
+                "method": "gdata",
+                "gidlist": gidlist[index:index + chunk_size],
+                "namespace": 1,
+            }
+            try:
+                data = await eh_client.post_api(payload)
+                meta_list = data.get("gmetadata", [])
+            except Exception as e:
+                logger.warning(f"Failed to hydrate metadata for synced galleries: {e}")
+                continue
+
+            async with SessionLocal() as session:
+                async with session.begin():
+                    for meta in meta_list:
+                        gid = meta["gid"]
+                        token = meta["token"]
+                        g = await session.get(Gallery, (gid, token))
+                        if not g:
+                            continue
+
+                        g.filecount = int(meta.get("filecount") or g.filecount or 0)
+                        posted_raw = meta.get("posted")
+                        if posted_raw:
+                            g.posted = datetime.utcfromtimestamp(int(posted_raw))
+                        g.tags = meta.get("tags") or g.tags
+                        g.title = meta.get("title") or g.title
+                        g.title_jpn = meta.get("title_jpn") or g.title_jpn
+                        g.category = meta.get("category") or g.category
+                        g.uploader = meta.get("uploader") or g.uploader
+                        rating = meta.get("rating")
+                        if rating is not None:
+                            g.rating = float(rating)
+                await session.commit()
 
     @staticmethod
     def _get_oldest_date_threshold(current_settings: dict) -> Optional[datetime]:

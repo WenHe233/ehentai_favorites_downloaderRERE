@@ -55,6 +55,15 @@ async def _get_domain() -> str:
         return settings.EH_DOMAIN
 
 
+async def _get_proxy_url() -> Optional[str]:
+    try:
+        from app.services.config_service import config_service
+        db_settings = await config_service.get_all_settings()
+        return db_settings.get("proxy_url") or settings.PROXY_URL
+    except Exception:
+        return settings.PROXY_URL
+
+
 class EHClient:
     def __init__(self):
         self._client: Optional[httpx.AsyncClient] = None
@@ -72,11 +81,12 @@ class EHClient:
         if self._client is None or self._client.is_closed:
             logger.info("Creating new httpx client...")
             cookies = await _get_dynamic_cookies()
+            proxy_url = await _get_proxy_url()
             logger.debug(f"Using cookies: {list(cookies.keys())}")
             self._client = httpx.AsyncClient(
                 cookies=cookies,
                 headers=self._get_headers(),
-                proxy=settings.PROXY_URL,
+                proxy=proxy_url,
                 timeout=30.0,
                 follow_redirects=True
             )

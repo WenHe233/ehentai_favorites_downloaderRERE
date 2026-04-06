@@ -433,18 +433,19 @@ class NotificationService:
         self._scheduled_flush_at = target
         self._flush_task = asyncio.create_task(self._delayed_flush(delay_seconds))
 
-    async def _send_message(self, text: str, runtime: TelegramNotificationSettings) -> None:
+    async def _send_message(self, text: str, runtime: TelegramNotificationSettings) -> list[int]:
         if not runtime.enabled:
-            return
+            return []
         if not runtime.token:
             logger.info("Telegram notifications skipped: bot token not configured.")
-            return
+            return []
         if not runtime.recipients:
             logger.info("Telegram notifications skipped: no recipients configured.")
-            return
+            return []
 
         temp_bot: Optional[Bot] = None
         sender: Optional[Bot] = None
+        failed_recipients: list[int] = []
 
         try:
             from app.services import bot as bot_service
@@ -463,9 +464,11 @@ class NotificationService:
                     await sender.send_message(chat_id=chat_id, text=text)
                 except Exception as exc:
                     logger.warning(f"Failed to send Telegram notification to {chat_id}: {exc}")
+                    failed_recipients.append(chat_id)
         finally:
             if temp_bot is not None:
                 await temp_bot.session.close()
+        return failed_recipients
 
     @staticmethod
     def _truncate_text(value: Optional[str], limit: int = 44) -> str:
@@ -687,11 +690,32 @@ class NotificationService:
 
         try:
             if len(pending) == 1:
-                await self._send_message(self._format_single_message(pending[0], active_runtime), active_runtime)
+                failed_recipients = await self._send_message(
+                    self._format_single_message(pending[0], active_runtime),
+                    active_runtime,
+                )
             else:
-                await self._send_message(self._format_digest_message(pending, active_runtime), active_runtime)
+                failed_recipients = await self._send_message(
+                    self._format_digest_message(pending, active_runtime),
+                    active_runtime,
+                )
         except Exception as exc:
             logger.warning(f"Failed to flush Telegram notifications, will retry later: {exc}")
+            retry_at = datetime.now(timezone.utc) + timedelta(seconds=NOTIFICATION_RETRY_DELAY_SECONDS)
+            async with self._buffer_lock:
+                latest_state = await self._read_buffer_state()
+                if latest_state.events:
+                    latest_state.flush_after = retry_at
+                    latest_state.flush_reason = BUFFER_REASON_BATCH
+                    await self._write_buffer_state(latest_state)
+            await self._schedule_flush_at(retry_at)
+            return
+
+        if failed_recipients:
+            logger.warning(
+                "Telegram notifications were not delivered to all recipients; "
+                f"will retry for recipients: {failed_recipients}"
+            )
             retry_at = datetime.now(timezone.utc) + timedelta(seconds=NOTIFICATION_RETRY_DELAY_SECONDS)
             async with self._buffer_lock:
                 latest_state = await self._read_buffer_state()
@@ -757,7 +781,16 @@ class NotificationService:
             await self._schedule_flush_at(flush_after or now)
             return
 
-        await self._send_message(self._format_single_message(event, runtime), runtime)
+        failed_recipients = await self._send_message(self._format_single_message(event, runtime), runtime)
+        if failed_recipients:
+            retry_at = datetime.now(timezone.utc) + timedelta(seconds=NOTIFICATION_RETRY_DELAY_SECONDS)
+            async with self._buffer_lock:
+                state = await self._read_buffer_state()
+                state.events.append(event)
+                state.flush_after = retry_at
+                state.flush_reason = BUFFER_REASON_BATCH
+                await self._write_buffer_state(state)
+            await self._schedule_flush_at(retry_at)
 
     async def initialize(self) -> int:
         return await self.refresh_schedule()

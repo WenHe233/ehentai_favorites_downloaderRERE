@@ -1,7 +1,8 @@
 import React, { Suspense, lazy, useCallback, useEffect, useState } from 'react';
-import { Spin } from 'antd';
+import { Alert, Button, Space, Spin, Typography } from 'antd';
 import axios from 'axios';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import ApiConnectionSettings from './components/ApiConnectionSettings';
 import api, { buildApiUrl, useApiBaseUrl } from './lib/api';
 import { clearAuthToken, getAuthToken } from './lib/auth';
 
@@ -32,9 +33,11 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [authEnabled, setAuthEnabled] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
 
   const bootstrapAuth = useCallback(async () => {
     setLoading(true);
+    setConnectionError(null);
 
     try {
       const response = await axios.get<AuthConfigResponse>(buildApiUrl('/auth/config', apiBaseUrl), {
@@ -61,9 +64,14 @@ const App: React.FC = () => {
         clearAuthToken();
         setAuthenticated(false);
       }
-    } catch {
+    } catch (error) {
       setAuthEnabled(false);
-      setAuthenticated(true);
+      setAuthenticated(false);
+      if (axios.isAxiosError(error)) {
+        setConnectionError(error.response?.data?.detail || error.message || '无法连接到后端服务');
+      } else {
+        setConnectionError('无法连接到后端服务');
+      }
     } finally {
       setLoading(false);
     }
@@ -89,6 +97,33 @@ const App: React.FC = () => {
 
   if (loading) {
     return fullscreenSpinner;
+  }
+
+  if (connectionError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-6">
+        <div style={{ width: '100%', maxWidth: 560 }}>
+          <Space direction="vertical" size={20} style={{ width: '100%' }}>
+            <Typography.Title level={2} style={{ margin: 0 }}>
+              无法连接后端
+            </Typography.Title>
+            <Alert
+              type="error"
+              showIcon
+              message="当前前端无法连接到后端服务"
+              description={connectionError}
+            />
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+              请检查后端是否已启动，或在“连接设置”中修改正确的后端地址。
+            </Typography.Paragraph>
+            <Space wrap>
+              <ApiConnectionSettings buttonText="连接设置" onSaved={() => void bootstrapAuth()} />
+              <Button onClick={() => void bootstrapAuth()}>重新检测</Button>
+            </Space>
+          </Space>
+        </div>
+      </div>
+    );
   }
 
   const needsLogin = authEnabled && !authenticated;

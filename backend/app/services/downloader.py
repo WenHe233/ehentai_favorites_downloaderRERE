@@ -1,6 +1,7 @@
 import asyncio
 import os
-import glob
+import time
+from pathlib import Path
 from sqlalchemy.future import select
 from loguru import logger
 from datetime import datetime
@@ -51,6 +52,17 @@ class DownloaderService:
             logger.info(f"Max concurrent downloads updated: {self._max_concurrent}")
         return current_settings
 
+    @staticmethod
+    def _cleanup_archive_temp_file(temp_file: Path) -> None:
+        try:
+            if temp_file.exists():
+                temp_file.unlink()
+                logger.info(f"Removed archive temp file: {temp_file}")
+        except FileNotFoundError:
+            return
+        except Exception as exc:
+            logger.warning(f"Failed to cleanup archive temp file {temp_file}: {exc}")
+
     async def start(self):
         if self.is_running:
             logger.info("Downloader Service is already running.")
@@ -79,6 +91,39 @@ class DownloaderService:
                 logger.info(f"Cancelled active download for gid={gid}")
                 return True
         return False
+
+    def is_active(self, gid: int) -> bool:
+        task = self._active_downloads.get(gid)
+        return bool(task and not task.done())
+
+    async def wait_for_inactive(self, gid: int, timeout: float = 10.0, poll_interval: float = 0.1) -> bool:
+        deadline = time.monotonic() + max(timeout, poll_interval)
+        while time.monotonic() < deadline:
+            if not self.is_active(gid):
+                return True
+            await asyncio.sleep(poll_interval)
+        return not self.is_active(gid)
+
+    async def cancel_and_wait(self, gid: int, timeout: float = 10.0) -> bool:
+        was_active = self.cancel_download(gid)
+        if not was_active:
+            return True
+        return await self.wait_for_inactive(gid, timeout=timeout)
+
+    async def cancel_all_and_wait(self, timeout: float = 15.0) -> bool:
+        active_gids = [gid for gid, task in self._active_downloads.items() if not task.done()]
+        if not active_gids:
+            return True
+
+        for gid in active_gids:
+            self.cancel_download(gid)
+
+        deadline = time.monotonic() + max(timeout, 0.1)
+        while time.monotonic() < deadline:
+            if all(not self.is_active(gid) for gid in active_gids):
+                return True
+            await asyncio.sleep(0.1)
+        return all(not self.is_active(gid) for gid in active_gids)
     
     def is_cancelled(self, gid: int) -> bool:
         """Check if a gid has been cancelled."""
@@ -148,35 +193,84 @@ class DownloaderService:
         )
     
     @staticmethod
-    def find_gallery_files(gid: int) -> list:
-        """Find all files related to a gallery gid in downloads folder."""
-        files = []
+    def find_gallery_files(gid: int) -> list[str]:
+        """Find legacy-named gallery files under the downloads directory tree."""
+        files: set[str] = set()
         download_dir = settings.DOWNLOAD_DIR
-        
-        # In glob, [] are special chars for character matching, need to escape them
-        # Pattern: [gid] *.zip or [gid] *_temp.zip
-        # Use glob.escape or manual escaping
-        patterns = [
-            f"[[]{ gid }[]] *.zip",  # Escape [ and ]
-            f"[[]{ gid }[]]*.zip",
+        if not download_dir.exists():
+            return []
+
+        prefix = f"[{gid}]"
+        for candidate in download_dir.rglob("*"):
+            if candidate.is_file() and candidate.name.startswith(prefix):
+                files.add(str(candidate))
+
+        return sorted(files)
+
+    @classmethod
+    def _collect_expected_gallery_paths(
+        cls,
+        gallery: Optional[Gallery],
+        current_settings: Optional[dict] = None,
+    ) -> set[str]:
+        if gallery is None:
+            return set()
+
+        runtime_settings = current_settings or settings.get_runtime_settings()
+        output_settings = cls._build_output_template_settings(runtime_settings)
+        candidate_qualities = [
+            getattr(gallery, "resolved_quality", None),
+            getattr(gallery, "requested_quality", None),
+            runtime_settings.get("archive_quality"),
+            settings.ARCHIVE_QUALITY,
+            "original",
+            "native",
         ]
-        
-        for pattern in patterns:
-            matches = glob.glob(str(download_dir / pattern))
-            files.extend(matches)
-            logger.debug(f"Glob pattern '{pattern}' found {len(matches)} files")
-        
-        return list(set(files))  # Remove duplicates
-    
-    @staticmethod
-    def delete_gallery_files(gid: int, known_paths: Optional[List[str]] = None) -> int:
+        seen: set[str] = set()
+        collected: set[str] = set()
+        for quality in candidate_qualities:
+            normalized_quality = normalize_quality_preference(quality)
+            if normalized_quality in seen:
+                continue
+            seen.add(normalized_quality)
+            try:
+                final_path, partial_path = resolve_output_targets(
+                    settings=output_settings,
+                    context=cls._build_output_context(
+                        gallery,
+                        quality=normalized_quality,
+                        downloaded_at=gallery.downloaded_at,
+                    ),
+                )
+            except Exception as exc:
+                logger.debug(f"Failed to resolve output template for gid={gallery.gid}: {exc}")
+                continue
+
+            collected.update(
+                {
+                    str(final_path),
+                    str(partial_path),
+                    str(with_temp_suffix(final_path)),
+                }
+            )
+        return collected
+
+    @classmethod
+    def delete_gallery_files(
+        cls,
+        gid: int,
+        known_paths: Optional[List[str]] = None,
+        gallery: Optional[Gallery] = None,
+        current_settings: Optional[dict] = None,
+    ) -> int:
         """Delete all files related to a gallery. Returns count of deleted files."""
-        files = set(DownloaderService.find_gallery_files(gid))
+        files = set(cls.find_gallery_files(gid))
         for path in known_paths or []:
             if path:
                 files.add(path)
+        files.update(cls._collect_expected_gallery_paths(gallery, current_settings))
         deleted = 0
-        for f in files:
+        for f in sorted(files):
             try:
                 os.remove(f)
                 logger.info(f"Deleted file: {f}")
@@ -406,6 +500,16 @@ class DownloaderService:
                                 )
                                 if not self.is_cancelled(g.gid):
                                     await upsert_failed_gallery(g, session=session)
+                            elif result_status == "cancelled" or self.is_cancelled(g.gid):
+                                g.status = DownloadStatus.PENDING
+                                g.error_msg = None
+                                await append_gallery_log(
+                                    gallery.gid,
+                                    gallery.token,
+                                    "下载已取消",
+                                    "warning",
+                                    session=session,
+                                )
                             else:
                                 g.status = DownloadStatus.FAILED
                                 g.retry_count += 1
@@ -473,7 +577,7 @@ class DownloaderService:
                                     requested_quality=result_requested_quality,
                                     resolved_quality=result_resolved_quality,
                                 )
-                            elif self.is_cancelled(g.gid):
+                            elif result_status == "cancelled" or self.is_cancelled(g.gid):
                                 await realtime_hub.emit_cancelled(g.gid, title=g.title)
                             else:
                                 failure_detail = self._append_quality_summary(
@@ -562,21 +666,32 @@ class DownloaderService:
                 await session.commit()
                 
                 gid = gallery.gid
-                token = gallery.token
                 
                 # Clear any stale cancelled flag from previous deletion
                 self.clear_cancelled(gid)
-                
-                # Get download mode from dynamic settings (not static)
-                from app.services.config_service import config_service
-                current_settings = await config_service.get_all_settings()
-                mode = current_settings.get("download_mode") or settings.DOWNLOAD_MODE
-                logger.info(f"Using download mode: {mode} for gallery {gid}")
-                
+
+        task = asyncio.create_task(self._run_sequential_gallery(gallery))
+        self._active_downloads[gid] = task
+        try:
+            await task
+        except asyncio.CancelledError:
+            logger.info(f"Sequential download task cancelled for gid={gid}")
+        finally:
+            if self._active_downloads.get(gid) is task:
+                del self._active_downloads[gid]
+
+    async def _run_sequential_gallery(self, gallery: Gallery):
+        gid = gallery.gid
+        token = gallery.token
+
         # Process outside of db transaction
         self._active_count += 1  # Track that we're downloading
         try:
+            from app.services.config_service import config_service
             from app.services.gallery_log import append_gallery_log
+            current_settings = await config_service.get_all_settings()
+            mode = current_settings.get("download_mode") or settings.DOWNLOAD_MODE
+            logger.info(f"Using download mode: {mode} for gallery {gid}")
             await self._set_progress(
                 gallery,
                 phase="preparing",
@@ -639,6 +754,16 @@ class DownloaderService:
                             )
                             if not self.is_cancelled(g.gid):
                                 await upsert_failed_gallery(g, session=session)
+                        elif result_status == "cancelled" or self.is_cancelled(g.gid):
+                            g.status = DownloadStatus.PENDING
+                            g.error_msg = None
+                            await append_gallery_log(
+                                gid,
+                                token,
+                                "下载已取消",
+                                "warning",
+                                session=session,
+                            )
                         else:
                             g.status = DownloadStatus.FAILED
                             # Retry logic could go here
@@ -707,7 +832,7 @@ class DownloaderService:
                                 requested_quality=result_requested_quality,
                                 resolved_quality=result_resolved_quality,
                             )
-                        elif self.is_cancelled(g.gid):
+                        elif result_status == "cancelled" or self.is_cancelled(g.gid):
                             await realtime_hub.emit_cancelled(g.gid, title=g.title)
                         else:
                             failure_detail = self._append_quality_summary(
@@ -773,6 +898,8 @@ class DownloaderService:
                         )
         finally:
             self._active_count -= 1  # Done downloading
+            if self._active_downloads.get(gid) is asyncio.current_task():
+                del self._active_downloads[gid]
 
     async def _download_gallery(self, gallery: Gallery, mode: str) -> bool:
         """
@@ -806,7 +933,7 @@ class DownloaderService:
 
                 if temp_file.exists():
                     logger.warning(f"Removing stale temp archive before download: {temp_file}")
-                    temp_file.unlink()
+                    self._cleanup_archive_temp_file(temp_file)
 
                 is_cancelled = lambda: self.is_cancelled(gallery.gid)
                 progress_callback = lambda **payload: self._set_progress(gallery, **payload)
@@ -826,6 +953,9 @@ class DownloaderService:
 
                     if self.is_cancelled(gallery.gid):
                         logger.info(f"Archive download cancelled for {gallery.gid}")
+                        gallery._result_status = "cancelled"
+                        gallery._result_detail = "下载已取消"
+                        self._cleanup_archive_temp_file(temp_file)
                         return False
 
                     if not dl_url:
@@ -842,11 +972,18 @@ class DownloaderService:
                         progress_callback=progress_callback,
                     )
                     success = result.success
+                    if result.cancelled:
+                        gallery._result_status = "cancelled"
+                        gallery._result_detail = "下载已取消"
+                        gallery.error_msg = None
+                        gallery._result_quality = quality_preference
+                        self._cleanup_archive_temp_file(temp_file)
+                        return False
                     if success:
                         break
 
                     if temp_file.exists():
-                        temp_file.unlink()
+                        self._cleanup_archive_temp_file(temp_file)
 
                     if (
                         result.should_refresh_url
@@ -907,8 +1044,8 @@ class DownloaderService:
                     logger.info(f"Archive download completed: {final_file}")
                     return True
                 else:
-                    if self.is_cancelled(gallery.gid) and temp_file.exists():
-                        temp_file.unlink()
+                    if self.is_cancelled(gallery.gid):
+                        self._cleanup_archive_temp_file(temp_file)
                     if not gallery.error_msg:
                         gallery.error_msg = "归档下载失败"
                     gallery._result_quality = quality_preference

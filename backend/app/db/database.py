@@ -1,4 +1,8 @@
+import asyncio
+
+from anyio import CancelScope
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from app.core.config import settings
@@ -12,19 +16,78 @@ engine = create_async_engine(
     echo=False,
 )
 
+
+class SafeAsyncSession(AsyncSession):
+    async def execute(self, *args, **kwargs):
+        with CancelScope(shield=True):
+            return await super().execute(*args, **kwargs)
+
+    async def commit(self) -> None:
+        with CancelScope(shield=True):
+            await super().commit()
+
+    async def rollback(self) -> None:
+        with CancelScope(shield=True):
+            await super().rollback()
+
+    async def flush(self, objects=None) -> None:
+        with CancelScope(shield=True):
+            await super().flush(objects)
+
+    async def close(self) -> None:
+        with CancelScope(shield=True):
+            await super().close()
+
+    async def invalidate(self) -> None:
+        with CancelScope(shield=True):
+            await super().invalidate()
+
+
 SessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,
     bind=engine,
-    class_=AsyncSession,
+    class_=SafeAsyncSession,
     expire_on_commit=False,
 )
 
 Base = declarative_base()
 
+
+def _is_ignorable_session_close_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return (
+        "no active connection" in message
+        or "cannot operate on a closed database" in message
+        or "closed database" in message
+    )
+
+
+async def close_session_safely(session: AsyncSession) -> None:
+    try:
+        current_task = asyncio.current_task()
+        if current_task and current_task.cancelling():
+            await session.invalidate()
+        else:
+            await session.close()
+    except asyncio.CancelledError:
+        return
+    except OperationalError as exc:
+        if _is_ignorable_session_close_error(exc):
+            return
+        raise
+    except ValueError as exc:
+        if _is_ignorable_session_close_error(exc):
+            return
+        raise
+
+
 async def get_db():
-    async with SessionLocal() as session:
+    session = SessionLocal()
+    try:
         yield session
+    finally:
+        await close_session_safely(session)
 
 async def init_models():
     async with engine.begin() as conn:

@@ -44,6 +44,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "ipb_member_id": None,
         "ipb_pass_hash": None,
         "igneous": None,
+        "cookie_auto_refresh": True,
     },
     "site": {
         "domain": "e-hentai.org",
@@ -95,6 +96,7 @@ RUNTIME_UPDATE_PATHS: Dict[str, tuple[str, ...]] = {
     "ipb_member_id": ("auth", "ipb_member_id"),
     "ipb_pass_hash": ("auth", "ipb_pass_hash"),
     "igneous": ("auth", "igneous"),
+    "cookie_auto_refresh": ("auth", "cookie_auto_refresh"),
     "eh_domain": ("site", "domain"),
     "download_mode": ("download", "mode"),
     "archive_quality": ("download", "archive_quality"),
@@ -251,6 +253,8 @@ def _render_commented_config(payload: Dict[str, Any]) -> str:
     lines.extend(_render_key_value("ipb_pass_hash", cfg["auth"]["ipb_pass_hash"], 1))
     lines.append("  # ExHentai 访问常用的 igneous cookie。")
     lines.extend(_render_key_value("igneous", cfg["auth"]["igneous"], 1))
+    lines.append("  # 是否在 igneous 过期时自动刷新。需要 ipb_member_id 和 ipb_pass_hash。")
+    lines.extend(_render_key_value("cookie_auto_refresh", cfg["auth"]["cookie_auto_refresh"], 1))
 
     lines.extend([
         "",
@@ -430,6 +434,7 @@ class Settings:
         self.EH_IPB_MEMBER_ID = _normalize_optional_string(auth_cfg.get("ipb_member_id"))
         self.EH_IPB_PASS_HASH = _normalize_optional_string(auth_cfg.get("ipb_pass_hash"))
         self.EH_IGNEOUS = _normalize_optional_string(auth_cfg.get("igneous"))
+        self.COOKIE_AUTO_REFRESH = bool(auth_cfg.get("cookie_auto_refresh", True))
 
         self.EH_DOMAIN = site_cfg["domain"]
 
@@ -586,6 +591,7 @@ class Settings:
             "ipb_member_id": self.EH_IPB_MEMBER_ID,
             "ipb_pass_hash": self.EH_IPB_PASS_HASH,
             "igneous": self.EH_IGNEOUS,
+            "cookie_auto_refresh": self.COOKIE_AUTO_REFRESH,
             "eh_domain": self.EH_DOMAIN,
             "download_mode": self.DOWNLOAD_MODE,
             "archive_quality": self.ARCHIVE_QUALITY,

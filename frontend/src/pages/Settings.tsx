@@ -26,6 +26,7 @@ interface SettingsResponse {
     ipb_member_id: string;
     ipb_pass_hash: string;
     igneous: string;
+    cookie_auto_refresh: boolean;
     eh_domain: string;
     download_mode: string;
     archive_quality: string;
@@ -72,6 +73,7 @@ interface SettingsFormValues {
     ipb_member_id?: string;
     ipb_pass_hash?: string;
     igneous?: string;
+    cookie_auto_refresh?: boolean;
     eh_domain?: string;
     download_mode?: string;
     archive_quality?: string;
@@ -404,6 +406,23 @@ const Settings: React.FC = () => {
                         </Form.Item>
                         <Form.Item label="Igneous" name="igneous" tooltip="ExHentai 必需">
                             <Input.Password placeholder={configuredSecrets.igneous ? '已保存，留空保持不变' : 'Cookie value'} />
+                        </Form.Item>
+                        <Form.Item label="自动刷新 igneous" name="cookie_auto_refresh" valuePropName="checked" tooltip="当 igneous 过期时自动刷新，需要 ipb_member_id 和 ipb_pass_hash">
+                            <Switch />
+                        </Form.Item>
+                        <Form.Item label="手动刷新 igneous">
+                            <Button
+                                onClick={async () => {
+                                    try {
+                                        const resp = await api.post('/api/v1/auth/eh-refresh-igneous');
+                                        message.success(`igneous 刷新成功: ${resp.data.igneous}`);
+                                    } catch (err: any) {
+                                        message.error(err?.response?.data?.detail || '刷新失败');
+                                    }
+                                }}
+                            >
+                                刷新 igneous
+                            </Button>
                         </Form.Item>
                         <Typography.Paragraph className="settings-card__hint">
                             敏感字段不会回显原值。留空表示保持当前配置不变。

@@ -48,6 +48,8 @@ auth:
   ipb_pass_hash: null
   # ExHentai 访问常用的 igneous cookie。
   igneous: null
+  # 是否在 igneous 过期时自动刷新。需要 ipb_member_id 和 ipb_pass_hash。
+  cookie_auto_refresh: true
 
 # 站点域名。可选：e-hentai.org / exhentai.org。
 site:

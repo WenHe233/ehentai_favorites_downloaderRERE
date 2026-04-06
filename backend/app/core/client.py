@@ -68,6 +68,7 @@ class EHClient:
     def __init__(self):
         self._client: Optional[httpx.AsyncClient] = None
         self.limiter = RateLimiter(interval=settings.REQUEST_DELAY)
+        self._refresh_lock = asyncio.Lock()
 
     def _get_headers(self):
         return {
@@ -97,14 +98,43 @@ class EHClient:
             await self._client.aclose()
             self._client = None
 
+    def _is_session_expired(self, response: httpx.Response) -> bool:
+        """Check if the response indicates an expired/invalid session."""
+        # ExHentai sadpanda (blank page or very short response with image)
+        if "exhentai.org" in str(response.url):
+            body = response.text
+            if len(body.strip()) < 100 and "sadpanda" in body.lower():
+                return True
+            if len(body.strip()) < 50 and "<html" not in body.lower():
+                return True
+
+        # Redirect to login page
+        final_url = str(response.url)
+        if "act=Login" in final_url or "CODE=01" in final_url:
+            return True
+
+        return False
+
+    async def _try_auto_refresh(self) -> bool:
+        """Attempt to auto-refresh igneous cookie. Returns True if successful."""
+        async with self._refresh_lock:
+            try:
+                from app.services.cookie_manager import cookie_manager
+                result = await cookie_manager.refresh_igneous()
+                return result is not None
+            except Exception as e:
+                logger.error(f"Auto-refresh igneous failed: {e}")
+                return False
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type((httpx.RequestError, httpx.TimeoutException))
     )
-    async def get_html(self, url: str, params: Dict = None) -> str:
+    async def get_html(self, url: str, params: Dict = None, _refreshed: bool = False) -> str:
         """
-        Fetch HTML with global rate limiting and retries.
+        Fetch HTML with global rate limiting, retries, and session expiration detection.
+        If session is expired and auto-refresh is configured, refreshes igneous and retries once.
         """
         await self.limiter.acquire()
         logger.info(f"Fetching: {url}")
@@ -118,7 +148,17 @@ class EHClient:
             if "banned" in response.text.lower() and "your ip" in response.text.lower():
                 logger.critical("Response contains 'banned'! Stopping requests.")
                 raise httpx.RequestError("Potential IP Ban detected")
-                
+
+            # Session expiration check — auto-refresh igneous once
+            if not _refreshed and self._is_session_expired(response):
+                logger.warning(f"Session expired detected for {url}, attempting igneous refresh...")
+                refreshed = await self._try_auto_refresh()
+                if refreshed:
+                    logger.info("igneous refreshed, retrying request...")
+                    return await self.get_html(url, params=params, _refreshed=True)
+                else:
+                    logger.warning("igneous auto-refresh not available or failed")
+
             return response.text
         except Exception as e:
             logger.error(f"Error fetching {url}: {e}")

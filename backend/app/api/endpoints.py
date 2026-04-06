@@ -318,6 +318,7 @@ class SettingsUpdate(BaseModel):
     ipb_member_id: Optional[str] = None
     ipb_pass_hash: Optional[str] = None
     igneous: Optional[str] = None
+    cookie_auto_refresh: Optional[bool] = None
     eh_domain: Optional[str] = None  # e-hentai.org or exhentai.org
     download_mode: Optional[str] = None
     archive_quality: Optional[str] = None
@@ -394,6 +395,23 @@ async def cleanup_maintenance_legacy_state(data: LegacyCleanupRequest):
         cleanup_temp_cookies=data.cleanup_temp_cookies,
         cleanup_downloads_zip=data.cleanup_downloads_zip,
     )
+
+@router.post("/auth/eh-refresh-igneous")
+async def refresh_igneous():
+    """手动刷新 igneous cookie。需要已配置 ipb_member_id 和 ipb_pass_hash。"""
+    from app.services.cookie_manager import cookie_manager, CookieRefreshError
+    try:
+        new_igneous = await cookie_manager.refresh_igneous(force=True)
+        if not new_igneous:
+            raise HTTPException(status_code=400, detail="刷新失败，请检查 ipb_member_id 和 ipb_pass_hash 是否正确")
+        return {"status": "ok", "igneous": new_igneous}
+    except HTTPException:
+        raise
+    except CookieRefreshError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
 
 @router.post("/download/manual")
 async def manual_download(data: ManualDownload, db: AsyncSession = Depends(get_db)):

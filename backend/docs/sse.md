@@ -80,6 +80,7 @@ Authorization: Bearer <token>
 - `sync_running`
 - `sync_last_error`
 - `last_sync_ts`
+- `updated_at`
 
 ### `heartbeat`
 
@@ -96,6 +97,7 @@ Authorization: Bearer <token>
 - `packaging`
 - `verifying`
 - `completed`
+- `partial`
 - `failed`
 - `cancelled`
 

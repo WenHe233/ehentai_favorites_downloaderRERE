@@ -1,4 +1,5 @@
 import asyncio
+import html as html_mod
 from sqlalchemy.future import select
 from loguru import logger
 from datetime import datetime, timezone
@@ -298,8 +299,10 @@ class UpdaterService:
                         if posted_raw:
                             g.posted = datetime.fromtimestamp(int(posted_raw), tz=timezone.utc)
                         g.tags = meta.get("tags") or g.tags
-                        g.title = meta.get("title") or g.title
-                        g.title_jpn = meta.get("title_jpn") or g.title_jpn
+                        _raw_title = meta.get("title")
+                        g.title = html_mod.unescape(_raw_title) if _raw_title else g.title
+                        _raw_jpn = meta.get("title_jpn")
+                        g.title_jpn = html_mod.unescape(_raw_jpn) if _raw_jpn else g.title_jpn
                         g.category = meta.get("category") or g.category
                         g.uploader = meta.get("uploader") or g.uploader
                         rating = meta.get("rating")
@@ -401,7 +404,7 @@ class UpdaterService:
                                 g.filecount = filecount
                                 g.posted = posted
                                 g.tags = tags
-                                g.title = meta["title"]
+                                g.title = html_mod.unescape(meta["title"])
                                 g.category = meta["category"]
                                 g.uploader = meta["uploader"]
                                 g.rating = float(meta["rating"])

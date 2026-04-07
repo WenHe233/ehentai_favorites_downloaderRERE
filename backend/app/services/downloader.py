@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shutil
 import time
 from pathlib import Path
 from sqlalchemy.future import select
@@ -1072,7 +1073,7 @@ class DownloaderService:
                         for conflict_path in (final_file, partial_file, with_temp_suffix(final_file)):
                             if conflict_path.exists():
                                 conflict_path.unlink()
-                    temp_file.replace(final_file)
+                    shutil.move(str(temp_file), str(final_file))
                     gallery._result_status = DownloadStatus.COMPLETED.value
                     gallery._result_detail = "下载完成"
                     gallery._result_downloaded_at = completed_at

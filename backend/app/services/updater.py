@@ -158,7 +158,26 @@ class UpdaterService:
                 raise
 
     @staticmethod
+    async def _ensure_fav_display_settings(domain: str, favcat: int) -> None:
+        """
+        Force favorites page to Compact display mode + Favorited Time sort.
+        These are sticky server-side settings (one inline_set param per request).
+        """
+        base = f"https://{domain}/favorites.php?favcat={favcat}"
+        try:
+            logger.info(f"Setting favorites display mode to Compact for favcat {favcat}")
+            await eh_client.get_html(f"{base}&inline_set=dm_l")
+        except Exception as e:
+            logger.warning(f"Failed to set display mode for favcat {favcat}: {e}")
+        try:
+            logger.info(f"Setting favorites sort to Favorited Time for favcat {favcat}")
+            await eh_client.get_html(f"{base}&inline_set=fs_f")
+        except Exception as e:
+            logger.warning(f"Failed to set sort order for favcat {favcat}: {e}")
+
+    @staticmethod
     async def _scan_category(domain: str, favcat: int, since_dt: datetime) -> Tuple[List[dict], bool]:
+        await UpdaterService._ensure_fav_display_settings(domain, favcat)
         url = f"https://{domain}/favorites.php?favcat={favcat}"
         items: List[dict] = []
 

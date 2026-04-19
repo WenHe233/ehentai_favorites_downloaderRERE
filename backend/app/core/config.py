@@ -2,6 +2,7 @@ from copy import deepcopy
 from pathlib import Path
 import re
 import shutil
+import sys
 from typing import Any, Dict, Optional
 
 import yaml
@@ -15,9 +16,26 @@ from app.core.output_template import (
 )
 
 
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
-CONFIG_PATH = BASE_DIR / "config.yaml"
-CONFIG_EXAMPLE_PATH = BASE_DIR / "config.yaml.example"
+# ── PyInstaller / Desktop mode path detection ─────────────────────────
+_FROZEN = getattr(sys, "frozen", False)
+
+if _FROZEN:
+    # Inside a PyInstaller bundle:
+    #   RUNTIME_DIR  = sys._MEIPASS  (temporary extraction folder with bundled data)
+    #   USER_DATA_DIR = directory containing the .exe (writable, persistent)
+    RUNTIME_DIR = Path(sys._MEIPASS)  # type: ignore[attr-defined]
+    USER_DATA_DIR = Path(sys.executable).parent
+    BASE_DIR = USER_DATA_DIR
+else:
+    # Normal development / Docker mode:
+    #   BASE_DIR = backend/ (grandparent of this file)
+    BASE_DIR = Path(__file__).resolve().parent.parent.parent
+    RUNTIME_DIR = BASE_DIR
+    USER_DATA_DIR = BASE_DIR
+
+CONFIG_PATH = USER_DATA_DIR / "config.yaml"
+CONFIG_EXAMPLE_PATH = RUNTIME_DIR / "config.yaml.example"
+FRONTEND_DIST_DIR = RUNTIME_DIR / "frontend_dist"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "app": {
@@ -360,6 +378,9 @@ def _render_commented_config(payload: Dict[str, Any]) -> str:
 class Settings:
     def __init__(self):
         self.BASE_DIR = BASE_DIR
+        self.RUNTIME_DIR = RUNTIME_DIR
+        self.USER_DATA_DIR = USER_DATA_DIR
+        self.FRONTEND_DIST_DIR = FRONTEND_DIST_DIR
         self.CONFIG_PATH = CONFIG_PATH
         self.CONFIG_EXAMPLE_PATH = CONFIG_EXAMPLE_PATH
         self._raw_config: Dict[str, Any] = {}

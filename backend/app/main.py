@@ -1,5 +1,6 @@
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from app.core.config import settings
 from app.core.security import require_authenticated_user
 from app.db.database import SessionLocal, init_models
@@ -52,6 +53,11 @@ app.include_router(
     prefix=settings.API_V1_STR,
     dependencies=[Depends(require_authenticated_user)],
 )
+
+# Serve the pre-built React frontend when running in desktop/bundled mode.
+# html=True makes it fall back to index.html for any unmatched path (SPA routing).
+if settings.FRONTEND_DIST_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=settings.FRONTEND_DIST_DIR, html=True), name="frontend")
 
 @app.on_event("startup")
 async def startup_event():

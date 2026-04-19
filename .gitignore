@@ -49,3 +49,8 @@ backend/downloads.zip
 # --- Local tooling ---
 .conda/
 dev/
+
+# --- Desktop build artifacts ---
+dist/
+build/
+*.spec.bak

@@ -381,12 +381,6 @@ class NativeCrawler:
             if detail.get("filecount", 0) > total_pages:
                 raise ValueError(f"图片页不完整：应有 {detail['filecount']} 页，仅解析到 {total_pages} 页")
             downloaded_files = NativeCrawler._scan_downloaded_files(temp_dir, total_pages)
-            if output_template_settings and output_template_settings.conflict_strategy == "overwrite" and not downloaded_files:
-                NativeCrawler.cleanup_resume_artifacts(int(gid))
-                temp_dir = NativeCrawler._get_temp_dir(gid)
-                resume_manifest = None
-                downloaded_files = {}
-
             if downloaded_files:
                 logger.info(
                     f"[NativeCrawler] Resuming gallery {gid}: "
@@ -443,6 +437,10 @@ class NativeCrawler:
                                 completed = len(downloaded_files)
                                 if (result.quality or preferred_quality) == "native":
                                     overall_quality = "native"
+                                NativeCrawler._write_resume_manifest(temp_dir, {
+                                    **(resume_manifest or {}), **identity, "quality": overall_quality,
+                                    "completed_pages": completed, "total_pages": total_pages,
+                                })
                             percent = 10 + ((completed / total_pages) * 80)
                             await NativeCrawler._notify_progress(
                                 progress_callback,
@@ -500,6 +498,10 @@ class NativeCrawler:
                             completed = len(downloaded_files)
                             if (result.quality or preferred_quality) == "native":
                                 overall_quality = "native"
+                            NativeCrawler._write_resume_manifest(temp_dir, {
+                                **(resume_manifest or {}), **identity, "quality": overall_quality,
+                                "completed_pages": completed, "total_pages": total_pages,
+                            })
                             percent = 10 + ((completed / total_pages) * 80)
                             await NativeCrawler._notify_progress(
                                 progress_callback,

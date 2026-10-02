@@ -1,6 +1,8 @@
 import hashlib
+import errno
 import json
 import os
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -33,3 +35,20 @@ class ArchiveCache:
 
     def forget(self):
         self.metadata.unlink(missing_ok=True)
+
+    def publish(self, destination):
+        """Replace the destination only after a complete cross-volume copy."""
+        destination = Path(destination)
+        try:
+            os.replace(self.path, destination)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV and getattr(exc, "winerror", None) != 17:
+                raise
+            temporary = destination.with_name(destination.name + ".tmpdownload")
+            try:
+                shutil.copyfile(self.path, temporary)
+                os.replace(temporary, destination)
+            finally:
+                temporary.unlink(missing_ok=True)
+            self.path.unlink(missing_ok=True)
+        self.forget()

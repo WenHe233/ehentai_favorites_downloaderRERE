@@ -37,10 +37,21 @@ def webview_available():
 
 
 class BackendServer:
-    def __init__(self):
+    def __init__(self, data_root):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.bind(("127.0.0.1", 0))
+        port_file = data_root / "data" / "desktop-port.json"
+        try:
+            port = int(json.loads(port_file.read_text(encoding="utf-8"))["port"])
+        except (OSError, ValueError, KeyError, TypeError):
+            port = 0
+        if not 1024 <= port <= 65535:
+            port = 0
+        try:
+            self.socket.bind(("127.0.0.1", port))
+        except OSError:
+            self.socket.bind(("127.0.0.1", 0))
         self.port = self.socket.getsockname()[1]
+        port_file.write_text(json.dumps({"port": self.port}), encoding="utf-8")
         self.server = None
         self.error = None
         self.thread = threading.Thread(target=self.run, daemon=True)
@@ -111,7 +122,7 @@ def main():
             import webbrowser
             webbrowser.open("https://developer.microsoft.com/microsoft-edge/webview2/")
             return 1
-        server = BackendServer()
+        server = BackendServer(data_root)
         server.thread.start()
         if not server.wait():
             raise RuntimeError(server.error or "后端启动超时，请检查 data/desktop.log")
@@ -136,22 +147,28 @@ def main():
             tray.start()
             if not args.smoke_test:
                 return
-            report = {"version": VERSION, "health": True, "window": False, "tray": False, "routes": []}
+            report = {"version": VERSION, "health": True, "window": False, "login": False, "tray": False, "routes": []}
             try:
                 deadline = time.monotonic() + 40
+                submitted = False
                 while time.monotonic() < deadline:
+                    if not submitted and window.evaluate_js("Boolean(document.querySelector('input[name=password]'))"):
+                        credentials = {"username": settings.ADMIN_USERNAME, "password": settings.ADMIN_PASSWORD}
+                        window.evaluate_js("const credentials = " + json.dumps(credentials) + "; for (const [name, value] of Object.entries(credentials)) { document.querySelector(`input[name=${name}]`).value = value; } document.querySelector('form').requestSubmit();")
+                        submitted = True
                     if window.evaluate_js("Boolean(document.querySelector('a[href=\"/galleries\"]'))"):
                         break
                     time.sleep(.25)
                 else:
                     raise RuntimeError("桌面前端未完成加载")
                 report["window"] = True
+                report["login"] = submitted
                 window.hide()
                 time.sleep(.5)
                 window.show()
                 report["tray"] = tray._icon is not None
                 for route, expected in (("/galleries", "下载任务"), ("/settings", "设置"), ("/", "收藏与下载")):
-                    window.evaluate_js(f"history.pushState(null, '', {json.dumps(route)}); window.dispatchEvent(new PopStateEvent('popstate'));")
+                    window.load_url(f"http://127.0.0.1:{server.port}{route}")
                     deadline = time.monotonic() + 15
                     while time.monotonic() < deadline:
                         if window.evaluate_js("document.querySelector('h1')?.textContent") == expected:
@@ -187,5 +204,10 @@ if __name__ == "__main__":
         destination.mkdir(parents=True, exist_ok=True)
         with (destination / "desktop-crash.log").open("w", encoding="utf-8") as stream:
             traceback.print_exc(file=stream)
-        message("启动失败：" + str(exc) + "\n详细信息见 data/desktop-crash.log。", error=True)
+        if "--smoke-test" in sys.argv:
+            report = Path(sys.argv[sys.argv.index("--smoke-test") + 1])
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text(json.dumps({"success": False, "error": str(exc)}), encoding="utf-8")
+        else:
+            message("启动失败：" + str(exc) + "\n详细信息见 data/desktop-crash.log。", error=True)
         raise

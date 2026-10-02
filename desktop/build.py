@@ -133,7 +133,7 @@ def build(output, compiler, skip_frontend=False):
         windres = compiler.replace("gcc", "windres")
         run([windres, resource, work / "resource.o"])
         run([compiler, "-municode", "-mwindows", "-O2", "-static", "-Wl,--no-insert-timestamp", ROOT / "desktop/bootstrap.c", work / "resource.o", "-o", app / "EFDRR.exe"])
-        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        revision = subprocess.check_output(["git", "-c", "safe.directory=" + str(ROOT), "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         (app / "BUILD-INFO.json").write_text(json.dumps({"version": version, "commit": revision, "python": runtime["python_version"], "runtime_sha256": runtime["python_sha256"]}, indent=2) + "\n", encoding="utf-8")
         archive_path = output / ("EFDRR-" + version + "-windows-x64.zip")
         with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
@@ -148,6 +148,7 @@ def build(output, compiler, skip_frontend=False):
                 info.external_attr = 0o644 << 16
                 archive.writestr(info, path.read_bytes())
         (output / "SHA256SUMS.txt").write_text(sha256(archive_path) + "  " + archive_path.name + "\n", encoding="utf-8")
+        shutil.copy2(ROOT / "RELEASE_NOTES.md", output / "RELEASE_NOTES.md")
         print(archive_path)
 
 

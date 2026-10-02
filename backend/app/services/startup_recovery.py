@@ -54,7 +54,7 @@ class StartupRecoveryService:
             return ("检测到上次运行中断，已重新排队原生爬虫任务", False)
 
         if StartupRecoveryService._archive_temp_exists(gallery.gid):
-            return ("检测到上次运行中断，归档下载将从头重新开始", False)
+            return ("检测到上次运行中断，将校验临时归档后恢复下载", False)
 
         return ("检测到上次运行中断，已重新排队下载任务", False)
 

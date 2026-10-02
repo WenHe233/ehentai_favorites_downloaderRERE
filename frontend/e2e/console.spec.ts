@@ -30,11 +30,18 @@ test('overview renders and supports dark mode',async({page},testInfo)=>{
 })
 test('long title, logs, resize and retry remain accessible',async({page})=>{
  const {requests}=await setup(page);await page.goto('/galleries')
+ const resize=page.getByRole('button',{name:'调整画廊列宽'})
+ const column=resize.locator('..')
+ const before=(await column.boundingBox())!.width
+ await resize.focus();await resize.press('ArrowRight')
+ await expect.poll(async()=>(await column.boundingBox())!.width).toBeGreaterThan(before)
  await page.getByRole('button',{name:longTitle.trim(),exact:true}).click()
  await expect(page.getByRole('dialog')).toContainText(longTitle.trim())
  await expect(page.getByRole('dialog')).toContainText('启用截断后重试')
  await page.getByRole('button',{name:'按当前设置重试'}).click()
  await expect.poll(()=>requests.includes('POST /galleries/123/reset')).toBeTruthy()
+ await page.reload()
+ await expect(page.getByRole('heading',{name:'下载任务',exact:true})).toBeVisible()
 })
 test('settings save the new filename limit and cookie refresh uses one API prefix',async({page})=>{
  const {requests,settings}=await setup(page);await page.goto('/settings')

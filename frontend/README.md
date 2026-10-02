@@ -71,5 +71,5 @@ npm run build
 
 开发服务器自动将 /api 请求代理到 http://127.0.0.1:8000。
 界面版本由根目录 VERSION 在构建时注入。
-单元测试运行 npm test，浏览器测试运行 npm run test:e2e。
+单元测试运行 npm test，浏览器测试先运行 npm run build，再运行 npm run test:e2e。
 Docker 构建需以仓库根目录为上下文：docker build -f frontend/Dockerfile .

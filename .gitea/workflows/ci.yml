@@ -52,12 +52,13 @@ jobs:
         run: |
           python desktop/build.py --skip-frontend
           python scripts/validate_package.py "dist/EFDRR-$(cat VERSION)-windows-x64.zip"
-      - uses: https://github.com/actions/upload-artifact@v3
+      # Gitea's v4 artifact backend requires the compatible action linked by Gitea.
+      - uses: https://github.com/ChristopherHX/gitea-upload-artifact@81f940d004763f986ba3582c007fd842dd5cb0d7
         with:
           name: windows-x64
           path: dist/*
           retention-days: 14
-      - uses: https://github.com/actions/upload-artifact@v3
+      - uses: https://github.com/ChristopherHX/gitea-upload-artifact@81f940d004763f986ba3582c007fd842dd5cb0d7
         if: always()
         with:
           name: browser-test-results
@@ -76,7 +77,7 @@ jobs:
       - uses: https://github.com/actions/setup-python@v5
         with:
           python-version: '3.13'
-      - uses: https://github.com/actions/download-artifact@v3
+      - uses: https://github.com/ChristopherHX/gitea-download-artifact@75635f32b4c1c41c4b3d64e8f85210112ed4c9c7
         with:
           name: windows-x64
           path: dist

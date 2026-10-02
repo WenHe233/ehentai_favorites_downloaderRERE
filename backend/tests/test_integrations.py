@@ -42,6 +42,30 @@ async def test_native_resume_excludes_incomplete_images(tmp_path):
     assert list(NativeCrawler._scan_downloaded_files(tmp_path,3))==[1]
 
 
+async def test_native_packaging_failure_preserves_previous_archive_and_images(tmp_path):
+    from app.core.native_crawler import NativeCrawler
+    import zipfile
+    image = tmp_path / '0001.png'
+    Image.new('RGB', (2, 2), 'red').save(image)
+    destination = tmp_path / 'gallery.zip'
+    with zipfile.ZipFile(destination, 'w') as archive:
+        archive.writestr('previous.txt', 'previous version')
+    previous = destination.read_bytes()
+    async def interrupt(**kwargs):
+        raise asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await NativeCrawler._write_zip(destination, {1: image}, interrupt,
+            detail_prefix='test', percent_start=90, percent_span=10)
+    assert destination.read_bytes() == previous
+    assert image.exists()
+    assert not destination.with_name('gallery.zip.tmpdownload').exists()
+    await NativeCrawler._write_zip(destination, {1: image}, None,
+        detail_prefix='test', percent_start=90, percent_span=10)
+    with zipfile.ZipFile(destination) as archive:
+        assert archive.namelist() == ['0001.png']
+        assert archive.testzip() is None
+
+
 async def test_cancel_before_task_starts_does_not_leave_reserved_slot():
     from app.services.downloader import downloader
     task=asyncio.create_task(asyncio.sleep(100))

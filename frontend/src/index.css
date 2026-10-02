@@ -2,6 +2,8 @@
 @import "tw-animate-css";
 @custom-variant dark (&:is(.dark *));
 :root {
+  color-scheme: light;
+  scrollbar-color: var(--muted-foreground) var(--muted);
   --background: oklch(0.985 0 0);
   --foreground: oklch(0.2 0 0);
   --card: oklch(1 0 0);
@@ -23,6 +25,7 @@
   --radius: 0.625rem;
 }
 .dark {
+  color-scheme: dark;
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.95 0 0);
   --card: oklch(0.185 0 0);
@@ -41,6 +44,11 @@
   --border: oklch(0.3 0 0);
   --input: oklch(0.35 0 0);
   --ring: oklch(0.55 0 0);
+}
+@media (forced-colors: active) {
+  :root {
+    scrollbar-color: auto;
+  }
 }
 @theme inline {
   --color-background: var(--background);

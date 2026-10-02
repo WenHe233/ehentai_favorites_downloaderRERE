@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { Toaster } from "sonner";
+import AppToaster from "@/components/AppToaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider, bootstrapTheme } from "@/lib/theme";
 import App from "./App";
@@ -11,7 +11,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <ThemeProvider>
       <TooltipProvider>
         <App />
-        <Toaster richColors position="bottom-right" />
+        <AppToaster />
       </TooltipProvider>
     </ThemeProvider>
   </React.StrictMode>,

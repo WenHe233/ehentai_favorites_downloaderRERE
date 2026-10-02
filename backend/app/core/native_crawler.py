@@ -286,24 +286,28 @@ class NativeCrawler:
         percent_start: float,
         percent_span: float,
     ) -> None:
-        NativeCrawler._remove_file(zip_path)
+        temporary = zip_path.with_name(zip_path.name + ".tmpdownload")
         sorted_keys = sorted(downloaded_files.keys())
         total_files = len(sorted_keys)
 
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
-            for position, idx in enumerate(sorted_keys, 1):
-                file_path = downloaded_files[idx]
-                archive.write(file_path, file_path.name)
-                percent = percent_start + ((position / total_files) * percent_span)
-                await NativeCrawler._notify_progress(
-                    progress_callback,
-                    phase="packaging",
-                    percent=percent,
-                    current=position,
-                    total=total_files,
-                    unit="files",
-                    detail=f"{detail_prefix} {position}/{total_files} 个文件",
-                )
+        try:
+            with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:
+                for position, idx in enumerate(sorted_keys, 1):
+                    file_path = downloaded_files[idx]
+                    archive.write(file_path, file_path.name)
+                    percent = percent_start + ((position / total_files) * percent_span)
+                    await NativeCrawler._notify_progress(
+                        progress_callback,
+                        phase="packaging",
+                        percent=percent,
+                        current=position,
+                        total=total_files,
+                        unit="files",
+                        detail=f"{detail_prefix} {position}/{total_files} 个文件",
+                    )
+            temporary.replace(zip_path)
+        finally:
+            NativeCrawler._remove_file(temporary)
 
     @staticmethod
     async def download(
@@ -544,16 +548,8 @@ class NativeCrawler:
                     context=resolved_output_context,
                 )
 
-                if resume_manifest and resume_manifest.get("partial_zip_path"):
-                    previous_partial = Path(str(resume_manifest["partial_zip_path"]))
-                    if previous_partial != partial_zip_path:
-                        NativeCrawler._remove_file(previous_partial)
-
                 if failed_pages:
                     error_detail = NativeCrawler._format_failed_pages(failed_pages)
-                    if active_template_settings.conflict_strategy == "overwrite":
-                        NativeCrawler._remove_file(partial_zip_path)
-                        NativeCrawler._remove_file(final_zip_path)
                     await NativeCrawler._write_zip(
                         partial_zip_path,
                         downloaded_files,
@@ -587,9 +583,6 @@ class NativeCrawler:
                         quality=overall_quality,
                     )
 
-                if active_template_settings.conflict_strategy == "overwrite":
-                    NativeCrawler._remove_file(final_zip_path)
-                    NativeCrawler._remove_file(partial_zip_path)
                 await NativeCrawler._write_zip(
                     final_zip_path,
                     downloaded_files,
@@ -598,6 +591,8 @@ class NativeCrawler:
                     percent_start=90,
                     percent_span=10,
                 )
+                if active_template_settings.conflict_strategy == "overwrite":
+                    NativeCrawler._remove_file(partial_zip_path)
 
                 NativeCrawler.cleanup_resume_artifacts(int(gid))
                 logger.info(f"[NativeCrawler] Successfully downloaded {gid} -> {final_zip_path}")

@@ -78,5 +78,6 @@ if __name__ == "__main__":
             raise ValueError("Release checksum mismatch")
         server = os.environ["GITEA_SERVER_URL"].rstrip("/")
         with httpx.Client(base_url=server + "/api/v1", headers={"Authorization": "token " + os.environ["GITEA_TOKEN"]}, timeout=300) as client:
-            release = publish(client, os.environ["GITEA_REPOSITORY"], version, revision, [archive, checksum], (ROOT / "RELEASE_NOTES.md").read_text(encoding="utf-8"))
+            notes = ROOT / "RELEASE_NOTES.md"
+            release = publish(client, os.environ["GITEA_REPOSITORY"], version, revision, [archive, checksum, notes], notes.read_text(encoding="utf-8"))
         print(release["html_url"])

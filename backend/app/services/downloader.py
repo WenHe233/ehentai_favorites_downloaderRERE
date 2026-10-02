@@ -456,6 +456,7 @@ class DownloaderService:
                 # Mark them as downloading
                 for g in galleries:
                     g.status = DownloadStatus.DOWNLOADING
+                    g.download_mode = mode
                 await session.commit()
 
                 # Start concurrent downloads; revert status on task creation failure
@@ -473,7 +474,7 @@ class DownloaderService:
         else:
             # Sequential mode for native_crawl
             # Only process if no active downloads (truly sequential)
-            if self._active_count > 0:
+            if self._active_downloads:
                 return
             await self._process_queue()
 
@@ -709,6 +710,7 @@ class DownloaderService:
 
                 # Lock it
                 gallery.status = DownloadStatus.DOWNLOADING
+                gallery.download_mode = settings.DOWNLOAD_MODE
                 await session.commit()
 
                 gid = gallery.gid

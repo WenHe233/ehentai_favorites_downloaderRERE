@@ -121,8 +121,9 @@ python scripts/version.py check
 python scripts/version.py patch
 ```
 
-开发分支与 PR 在 Gitea 的 ubuntu-latest Runner 上运行后端、前端和浏览器测试，并生成 Windows 候选包。
-VERSION 合入 master 后自动生成同名 v 标签和正式 Release。附件上传完整后才公开发布；失败的上传保留为草稿，允许重跑。
+开发分支与 PR 在 Gitea 的 ubuntu-latest Runner 上运行后端、前端和浏览器测试，并验证 Windows 打包。
+构建包和测试报告仅存放在任务的临时目录，不上传到 Actions Artifacts。
+VERSION 合入 master 后，同一任务直接将 Windows ZIP、校验文件和更新说明上传到 Release，并生成对应的 v 标签。附件上传完整后才公开发布；失败的上传保留为草稿，允许重跑。
 使用 Gitea 内置 GITEA_TOKEN，无需在仓库中保存个人令牌。
 
 Ubuntu 构建工具需要 Python 3.13、Node.js 24、uv 0.12.10、MinGW-w64、setuptools 和 wheel。

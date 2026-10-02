@@ -100,6 +100,16 @@ class NativeCrawler:
         return temp_dir / "resume_manifest.json"
 
     @staticmethod
+    def _verify_image(path: Path) -> None:
+        from PIL import Image, ImageSequence
+        with Image.open(path) as image:
+            image.verify()
+        # JPEG verify() only checks headers; decode pixels to reject truncated data.
+        with Image.open(path) as image:
+            for frame in ImageSequence.Iterator(image):
+                frame.load()
+
+    @staticmethod
     def _scan_downloaded_files(temp_dir: Path, total_pages: int) -> Dict[int, Path]:
         downloaded_files: Dict[int, Path] = {}
         if not temp_dir.exists():
@@ -114,9 +124,7 @@ class NativeCrawler:
             index = int(match.group(1))
             if 1 <= index <= total_pages and path.stat().st_size:
                 try:
-                    from PIL import Image
-                    with Image.open(path) as image:
-                        image.verify()
+                    NativeCrawler._verify_image(path)
                     downloaded_files[index] = path
                 except (OSError, ValueError):
                     continue
@@ -758,9 +766,7 @@ class NativeCrawler:
                         continue
 
                     try:
-                        from PIL import Image
-                        with Image.open(partial_image) as image:
-                            image.verify()
+                        NativeCrawler._verify_image(partial_image)
                         os.replace(partial_image, file_path)
                     except (OSError, ValueError) as exc:
                         last_error = f"图片校验失败: {exc}"

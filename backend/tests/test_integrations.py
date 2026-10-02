@@ -39,7 +39,10 @@ async def test_native_resume_excludes_incomplete_images(tmp_path):
     Image.new('RGB',(2,2),'red').save(tmp_path/'0001.png')
     (tmp_path/'0002.jpg').write_bytes(b'incomplete')
     (tmp_path/'0003.png.part').write_bytes(b'partial')
-    assert list(NativeCrawler._scan_downloaded_files(tmp_path,3))==[1]
+    jpeg = tmp_path/'0004.jpg'
+    Image.new('RGB',(100,100),'red').save(jpeg)
+    jpeg.write_bytes(jpeg.read_bytes()[:-20])
+    assert list(NativeCrawler._scan_downloaded_files(tmp_path,4))==[1]
 
 
 async def test_native_packaging_failure_preserves_previous_archive_and_images(tmp_path):

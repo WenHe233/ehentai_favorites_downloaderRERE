@@ -1,826 +1,645 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRef, useState } from "react";
 import {
-    Button,
-    Card,
-    Col,
-    Dropdown,
-    Empty,
-    Input,
-    Modal,
-    Popconfirm,
-    Row,
-    Select,
-    Space,
-    Table,
-    Tag,
-    Tooltip,
-    Typography,
-    message,
-} from 'antd';
+  ChevronLeft,
+  ChevronRight,
+  MoreHorizontal,
+  RefreshCw,
+  Search,
+  Trash2,
+  FileText,
+  ExternalLink,
+} from "lucide-react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
-    DeleteOutlined,
-    DownOutlined,
-    FileTextOutlined,
-    FolderOpenOutlined,
-    ReloadOutlined,
-    SearchOutlined,
-    SyncOutlined,
-} from '@ant-design/icons';
-import type { ColumnsType } from 'antd/es/table';
-import type { MenuProps, TablePaginationConfig } from 'antd';
-import api from '../lib/api';
-import type { GalleryProgress, GalleryProgressEvent } from '../lib/download-events';
-import { useDownloadEventStream } from '../lib/download-events';
-import GalleryProgressPanel from '../components/GalleryProgressPanel';
-import ResizableHeaderCell from '../components/ResizableHeaderCell';
-import StatusPill from '../components/StatusPill';
-
-interface LogEntry {
-    time: string;
-    level: string;
-    msg: string;
-}
-
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import { ConfirmAction, ErrorPanel, Loading } from "@/components/common";
+import StatusPill from "@/components/StatusPill";
+import { statusLabels } from "@/lib/status";
+import GalleryProgressPanel from "@/components/GalleryProgressPanel";
+import { useApi, dateText, errorText } from "@/lib/query";
+import {
+  useDownloadEventStream,
+  type GalleryProgress,
+} from "@/lib/download-events";
+import api from "@/lib/api";
 interface Gallery {
-    gid: number;
-    token: string;
-    title: string;
-    status: string;
-    filecount: number;
-    posted?: string | null;
-    downloaded_at?: string | null;
-    favorited_at?: string | null;
-    error_msg?: string | null;
-    parent_gid?: string | null;
-    requested_quality?: string | null;
-    resolved_quality?: string | null;
-    progress?: GalleryProgress | null;
+  gid: number;
+  token: string;
+  title: string;
+  status: string;
+  filecount: number;
+  posted: string | null;
+  downloaded_at: string | null;
+  favorited_at: string | null;
+  error_msg: string | null;
+  download_path: string | null;
+  parent_gid: string | null;
+  requested_quality: string | null;
+  resolved_quality: string | null;
+  progress: GalleryProgress;
 }
-
-interface GalleryListResponse {
-    items: Gallery[];
-    total: number;
-    skip: number;
-    limit: number;
+interface Page {
+  items: Gallery[];
+  total: number;
 }
-
-interface GalleryLogsResponse {
-    gid: number;
-    token: string;
-    title: string;
-    error_msg?: string | null;
-    requested_quality?: string | null;
-    resolved_quality?: string | null;
-    logs: LogEntry[];
+interface Logs {
+  logs: { time: string; level: string; msg: string }[];
 }
-
-const DEFAULT_PAGE_SIZE = 20;
-const DEFAULT_COLUMN_WIDTHS = {
-    gallery: 460,
-    gid: 120,
-    favorited_at: 190,
-    status: 150,
-    progress: 320,
-    filecount: 90,
-    downloaded_at: 190,
-    action: 220,
-} as const;
-
-const COLUMN_MIN_WIDTHS: Record<string, number> = {
-    gallery: 320,
-    gid: 100,
-    favorited_at: 170,
-    status: 120,
-    progress: 260,
-    filecount: 80,
-    downloaded_at: 170,
-    action: 200,
-};
-
-const statusOptions = [
-    { value: '', label: '全部状态' },
-    { value: 'pending', label: '等待中' },
-    { value: 'downloading', label: '下载中' },
-    { value: 'completed', label: '已完成' },
-    { value: 'partial', label: '部分完成' },
-    { value: 'failed', label: '失败' },
-    { value: 'outdated', label: '待更新' },
-];
-
-const formatUtcToLocal = (utcString: string | null | undefined): string => {
-    if (!utcString) {
-        return '-';
-    }
-
+const initialWidths = [54, 420, 110, 220, 120, 180, 68];
+export default function Galleries() {
+  const [search, setSearch] = useState("");
+  const [draft, setDraft] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(20);
+  const [selected, setSelected] = useState<number[]>([]);
+  const [current, setCurrent] = useState<Gallery | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [widths, setWidths] = useState(initialWidths);
+  const drag = useRef<{ index: number; x: number; width: number } | null>(null);
+  const query = new URLSearchParams({
+    skip: String((page - 1) * size),
+    limit: String(size),
+    ...(search ? { search } : {}),
+    ...(filter !== "all" ? { status: filter } : {}),
+  });
+  const { data, error, isLoading, mutate } = useApi<Page>(
+    "/galleries?" + query,
+    15000,
+  );
+  const {
+    data: logs,
+    error: logError,
+    isLoading: loadingLog,
+  } = useApi<Logs>(current ? "/galleries/" + current.gid + "/logs" : null);
+  async function refresh() {
+    const next = await mutate();
+    if (next && page > Math.max(1, Math.ceil(next.total / size)))
+      setPage(Math.max(1, Math.ceil(next.total / size)));
+  }
+  useDownloadEventStream({
+    onGalleryProgress: (event) => {
+      void mutate(
+        (old) =>
+          old
+            ? {
+                ...old,
+                items: old.items.map((item) =>
+                  item.gid === event.gid ? { ...item, ...event } : item,
+                ),
+              }
+            : old,
+        { revalidate: false },
+      );
+    },
+    onGalleryStatus: () => void refresh(),
+    onSnapshot: () => void refresh(),
+    onReconnected: () => void refresh(),
+  });
+  async function action(
+    ids: number[],
+    operation: "reset" | "delete" | "files",
+  ) {
+    setBusy(true);
     try {
-        const normalized = utcString.includes('T') ? utcString : utcString.replace(' ', 'T');
-        const withTimezone = /(?:Z|[+-]\d{2}:\d{2})$/.test(normalized) ? normalized : `${normalized}Z`;
-        const date = new Date(withTimezone);
-        return Number.isNaN(date.getTime()) ? utcString : date.toLocaleString();
-    } catch {
-        return '-';
-    }
-};
-
-const formatQualityLabel = (value: string | null | undefined): string | null => {
-    if (value === 'original') {
-        return '原图';
-    }
-    if (value === 'native') {
-        return '展示图';
-    }
-    return null;
-};
-
-const buildQualitySummary = (
-    requestedQuality: string | null | undefined,
-    resolvedQuality: string | null | undefined
-): string | null => {
-    const resolvedLabel = formatQualityLabel(resolvedQuality);
-    if (resolvedLabel) {
-        if (requestedQuality === 'original' && resolvedQuality === 'native') {
-            return `最终质量：${resolvedLabel}（自动降级）`;
-        }
-        return `最终质量：${resolvedLabel}`;
-    }
-
-    const requestedLabel = formatQualityLabel(requestedQuality);
-    if (requestedLabel) {
-        return `请求质量：${requestedLabel}`;
-    }
-
-    return null;
-};
-
-const hasOwn = <T extends object>(value: T, key: string) =>
-    Object.prototype.hasOwnProperty.call(value, key);
-
-const Galleries: React.FC = () => {
-    const [data, setData] = useState<Gallery[]>([]);
-    const [loading, setLoading] = useState(false);
-    const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
-    const [searchText, setSearchText] = useState('');
-    const [statusFilter, setStatusFilter] = useState('');
-    const [currentPage, setCurrentPage] = useState(1);
-    const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
-    const [total, setTotal] = useState(0);
-    const [columnWidths, setColumnWidths] = useState<Record<string, number>>(() => ({ ...DEFAULT_COLUMN_WIDTHS }));
-
-    const [logModalVisible, setLogModalVisible] = useState(false);
-    const [currentLogGallery, setCurrentLogGallery] = useState<Gallery | null>(null);
-    const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
-    const [logLoading, setLogLoading] = useState(false);
-    const [logError, setLogError] = useState<string | null>(null);
-
-    const fetchGalleries = useCallback(
-        async (page = currentPage, size = pageSize) => {
-            setLoading(true);
-
-            try {
-                const response = await api.get<GalleryListResponse>('/galleries', {
-                    params: {
-                        skip: (page - 1) * size,
-                        limit: size,
-                        status: statusFilter || undefined,
-                        search: searchText.trim() || undefined,
-                    },
-                });
-
-                const maxPage = Math.max(1, Math.ceil(response.data.total / size));
-                if (response.data.total > 0 && page > maxPage) {
-                    setCurrentPage(maxPage);
-                    return;
-                }
-
-                setData(response.data.items);
-                setTotal(response.data.total);
-            } catch (error) {
-                console.error(error);
-                message.error('加载画廊列表失败');
-            } finally {
-                setLoading(false);
-            }
-        },
-        [currentPage, pageSize, searchText, statusFilter]
-    );
-
-    const updateGalleryFromEvent = useCallback((payload: GalleryProgressEvent) => {
-        setData((current) =>
-            current.map((item) =>
-                item.gid === payload.gid
-                    ? (() => {
-                          const nextStatus = payload.status || item.status;
-                          const hasErrorMsg = hasOwn(payload, 'error_msg');
-                          const hasDownloadedAt = hasOwn(payload, 'downloaded_at');
-                          const hasRequestedQuality = hasOwn(payload, 'requested_quality');
-                          const hasResolvedQuality = hasOwn(payload, 'resolved_quality');
-
-                          let nextErrorMsg = hasErrorMsg ? (payload.error_msg ?? null) : item.error_msg;
-                          let nextDownloadedAt = hasDownloadedAt ? (payload.downloaded_at ?? null) : item.downloaded_at;
-                          let nextRequestedQuality = hasRequestedQuality
-                              ? (payload.requested_quality ?? null)
-                              : item.requested_quality;
-                          let nextResolvedQuality = hasResolvedQuality
-                              ? (payload.resolved_quality ?? null)
-                              : item.resolved_quality;
-
-                          if (!hasErrorMsg && ['pending', 'downloading', 'completed', 'cancelled'].includes(nextStatus)) {
-                              nextErrorMsg = null;
-                          }
-
-                          if (!hasDownloadedAt && ['pending', 'downloading', 'failed', 'partial', 'cancelled'].includes(nextStatus)) {
-                              nextDownloadedAt = null;
-                          }
-
-                          if (!hasResolvedQuality && ['pending', 'downloading', 'cancelled'].includes(nextStatus)) {
-                              nextResolvedQuality = null;
-                          }
-
-                          if (!hasRequestedQuality && ['pending', 'cancelled'].includes(nextStatus)) {
-                              nextRequestedQuality = null;
-                          }
-
-                          return {
-                              ...item,
-                              title: payload.title || item.title,
-                              status: nextStatus,
-                              error_msg: nextErrorMsg,
-                              downloaded_at: nextDownloadedAt,
-                              requested_quality: nextRequestedQuality,
-                              resolved_quality: nextResolvedQuality,
-                              progress: payload.progress || item.progress,
-                          };
-                      })()
-                    : item
-            )
+      const results = await Promise.allSettled(
+        ids.map((id) =>
+          operation === "reset"
+            ? api.post("/galleries/" + id + "/reset")
+            : api.delete(
+                "/galleries/" +
+                  id +
+                  (operation === "files" ? "/with-files" : ""),
+              ),
+        ),
+      );
+      const failed = results.filter((result) => result.status === "rejected");
+      if (failed.length)
+        toast.error(
+          failed.length +
+            " 项操作失败：" +
+            errorText((failed[0] as PromiseRejectedResult).reason),
         );
-    }, []);
-
-    const { connectionState } = useDownloadEventStream({
-        onSnapshot: (payload) => {
-            setData((current) =>
-                current.map((item) => {
-                    const live = payload.active_galleries.find((entry) => entry.gid === item.gid);
-                    if (!live) {
-                        return item;
-                    }
-
-                    return {
-                        ...item,
-                        title: live.title || item.title,
-                        status: live.status || item.status,
-                        error_msg:
-                            (live.status || item.status) === 'downloading'
-                                ? null
-                                : hasOwn(live, 'error_msg')
-                                  ? (live.error_msg ?? null)
-                                  : item.error_msg,
-                        downloaded_at:
-                            (live.status || item.status) === 'downloading'
-                                ? null
-                                : live.downloaded_at ?? item.downloaded_at,
-                        requested_quality: live.requested_quality ?? item.requested_quality ?? null,
-                        resolved_quality:
-                            (live.status || item.status) === 'downloading'
-                                ? null
-                                : live.resolved_quality ?? item.resolved_quality ?? null,
-                        progress: live.progress || item.progress,
-                    };
-                })
-            );
-        },
-        onGalleryProgress: updateGalleryFromEvent,
-        onGalleryStatus: updateGalleryFromEvent,
-        onReconnected: () => {
-            void fetchGalleries();
-        },
-    });
-
-    useEffect(() => {
-        const timeout = window.setTimeout(() => {
-            void fetchGalleries();
-        }, searchText ? 250 : 0);
-
-        return () => {
-            window.clearTimeout(timeout);
-        };
-    }, [fetchGalleries, searchText]);
-
-    const refreshCurrentPage = useCallback(async () => {
-        await fetchGalleries();
-    }, [fetchGalleries]);
-
-    const handleDeleteRecord = useCallback(async (gid: number) => {
-        try {
-            await api.delete(`/galleries/${gid}`);
-            message.success('记录已删除');
-            await refreshCurrentPage();
-        } catch (error) {
-            console.error(error);
-            message.error('删除失败');
-        }
-    }, [refreshCurrentPage]);
-
-    const handleDeleteWithFiles = useCallback(async (gid: number) => {
-        try {
-            const response = await api.delete(`/galleries/${gid}/with-files`);
-            const { was_downloading, files_deleted } = response.data as {
-                was_downloading?: boolean;
-                files_deleted?: number;
-            };
-            let text = '记录和文件已删除';
-            if (was_downloading) {
-                text += '（已终止下载）';
-            }
-            if (files_deleted) {
-                text += `，删除了 ${files_deleted} 个文件`;
-            }
-            message.success(text);
-            await refreshCurrentPage();
-        } catch (error) {
-            console.error(error);
-            message.error('删除失败');
-        }
-    }, [refreshCurrentPage]);
-
-    const handleReset = useCallback(async (gid: number) => {
-        try {
-            await api.post(`/galleries/${gid}/reset`);
-            message.success('已重置为等待下载');
-            await refreshCurrentPage();
-        } catch (error) {
-            console.error(error);
-            message.error('重置失败');
-        }
-    }, [refreshCurrentPage]);
-
-    const handleDeleteAll = async () => {
-        try {
-            await api.delete('/galleries', { params: { confirm: true } });
-            message.success('所有画廊已删除');
-            setSelectedRowKeys([]);
-            setCurrentPage(1);
-            await fetchGalleries(1, pageSize);
-        } catch (error) {
-            console.error(error);
-            message.error('删除失败');
-        }
-    };
-
-    const handleViewLog = useCallback(async (gallery: Gallery) => {
-        setCurrentLogGallery(gallery);
-        setLogLoading(true);
-        setLogError(null);
-        setLogEntries([]);
-        setLogModalVisible(true);
-
-        try {
-            const response = await api.get<GalleryLogsResponse>(`/galleries/${gallery.gid}/logs`);
-            setLogEntries(response.data.logs || []);
-            setLogError(response.data.error_msg || null);
-            setCurrentLogGallery((current) =>
-                current
-                    ? {
-                          ...current,
-                          requested_quality: response.data.requested_quality ?? current.requested_quality ?? null,
-                          resolved_quality: response.data.resolved_quality ?? current.resolved_quality ?? null,
-                      }
-                    : current
-            );
-        } catch (error) {
-            console.error(error);
-            setLogError('加载日志失败');
-        } finally {
-            setLogLoading(false);
-        }
-    }, []);
-
-    const handleBatchReset = async () => {
-        try {
-            let successCount = 0;
-            for (const gid of selectedRowKeys) {
-                try {
-                    await api.post(`/galleries/${gid}/reset`);
-                    successCount += 1;
-                } catch (error) {
-                    console.error(`Failed to reset ${gid}`, error);
-                }
-            }
-            message.success(`已重置 ${successCount} 个画廊`);
-            setSelectedRowKeys([]);
-            await refreshCurrentPage();
-        } catch (error) {
-            console.error(error);
-            message.error('批量重置失败');
-        }
-    };
-
-    const handleBatchDeleteRecord = async () => {
-        try {
-            let successCount = 0;
-            for (const gid of selectedRowKeys) {
-                try {
-                    await api.delete(`/galleries/${gid}`);
-                    successCount += 1;
-                } catch (error) {
-                    console.error(`Failed to delete ${gid}`, error);
-                }
-            }
-            message.success(`已删除 ${successCount} 条记录`);
-            setSelectedRowKeys([]);
-            await refreshCurrentPage();
-        } catch (error) {
-            console.error(error);
-            message.error('批量删除失败');
-        }
-    };
-
-    const handleBatchDeleteWithFiles = async () => {
-        try {
-            let successCount = 0;
-            let filesDeleted = 0;
-            for (const gid of selectedRowKeys) {
-                try {
-                    const response = await api.delete(`/galleries/${gid}/with-files`);
-                    successCount += 1;
-                    filesDeleted += (response.data as { files_deleted?: number }).files_deleted || 0;
-                } catch (error) {
-                    console.error(`Failed to delete ${gid}`, error);
-                }
-            }
-            message.success(`已删除 ${successCount} 条记录，${filesDeleted} 个文件`);
-            setSelectedRowKeys([]);
-            await refreshCurrentPage();
-        } catch (error) {
-            console.error(error);
-            message.error('批量删除失败');
-        }
-    };
-
-    const getDeleteMenuItems = useCallback((gid: number): MenuProps['items'] => [
-        {
-            key: 'record',
-            label: '仅删除记录',
-            icon: <DeleteOutlined />,
-            onClick: () => {
-                void handleDeleteRecord(gid);
-            },
-        },
-        {
-            key: 'with-files',
-            label: '删除记录和文件',
-            icon: <FolderOpenOutlined />,
-            danger: true,
-            onClick: () => {
-                void handleDeleteWithFiles(gid);
-            },
-        },
-    ], [handleDeleteRecord, handleDeleteWithFiles]);
-
-    const resizeColumn = useCallback((key: string, nextWidth: number) => {
-        setColumnWidths((current) => ({
-            ...current,
-            [key]: nextWidth,
-        }));
-    }, []);
-
-    const columns: ColumnsType<Gallery> = useMemo(() => {
-        const baseColumns: ColumnsType<Gallery> = [
-            {
-                title: '画廊',
-                key: 'gallery',
-                width: columnWidths.gallery,
-                render: (_value: unknown, record: Gallery) => (
-                    <div className="gallery-title-cell">
-                        <Tooltip title={record.title} placement="topLeft">
-                            <div className="gallery-title-clamp">{record.title}</div>
-                        </Tooltip>
-                        {record.parent_gid && (
-                            <button
-                                className="gallery-link-button"
-                                onClick={(event) => {
-                                    event.stopPropagation();
-                                    setSearchText(record.parent_gid || '');
-                                    setCurrentPage(1);
-                                }}
-                                type="button"
-                            >
-                                来自旧版本 {record.parent_gid}
-                            </button>
-                        )}
-                    </div>
-                ),
-            },
-            {
-                title: 'GID',
-                dataIndex: 'gid',
-                key: 'gid',
-                width: columnWidths.gid,
-                render: (value: number) => <span className="gallery-mono">{value}</span>,
-            },
-            {
-                title: '收藏时间',
-                dataIndex: 'favorited_at',
-                key: 'favorited_at',
-                width: columnWidths.favorited_at,
-                render: (text: Gallery['favorited_at']) => formatUtcToLocal(text),
-            },
-            {
-                title: '状态',
-                key: 'status',
-                width: columnWidths.status,
-                render: (_value: unknown, record: Gallery) => (
-                    <div className="space-y-2">
-                        <StatusPill status={record.status || 'pending'} />
-                        {buildQualitySummary(record.requested_quality, record.resolved_quality) && (
-                            <div className="text-[11px] text-[var(--app-text-muted)]">
-                                {buildQualitySummary(record.requested_quality, record.resolved_quality)}
-                            </div>
-                        )}
-                        {record.error_msg && (
-                            <Tooltip title={record.error_msg}>
-                                <div className="gallery-error-clamp">{record.error_msg}</div>
-                            </Tooltip>
-                        )}
-                    </div>
-                ),
-            },
-            {
-                title: '进度',
-                dataIndex: 'progress',
-                key: 'progress',
-                width: columnWidths.progress,
-                render: (progress: Gallery['progress']) => <GalleryProgressPanel progress={progress} compact />,
-            },
-            {
-                title: '文件数',
-                dataIndex: 'filecount',
-                key: 'filecount',
-                width: columnWidths.filecount,
-                render: (value: number) => <span>{value || '-'}</span>,
-            },
-            {
-                title: '完成时间',
-                dataIndex: 'downloaded_at',
-                key: 'downloaded_at',
-                width: columnWidths.downloaded_at,
-                render: (text: Gallery['downloaded_at']) => formatUtcToLocal(text),
-            },
-            {
-                title: '操作',
-                key: 'action',
-                width: columnWidths.action,
-                render: (_value: unknown, record: Gallery) => (
-                    <Space size="small">
-                        <Button
-                            type="link"
-                            size="small"
-                            icon={<FileTextOutlined />}
-                            onClick={() => {
-                                void handleViewLog(record);
-                            }}
-                        >
-                            日志
-                        </Button>
-                        <Button
-                            type="link"
-                            size="small"
-                            icon={<ReloadOutlined />}
-                            onClick={() => {
-                                void handleReset(record.gid);
-                            }}
-                        >
-                            重试
-                        </Button>
-                        <Dropdown menu={{ items: getDeleteMenuItems(record.gid) }} trigger={['click']}>
-                            <Button type="link" size="small" danger>
-                                删除 <DownOutlined />
-                            </Button>
-                        </Dropdown>
-                    </Space>
-                ),
-            },
-        ];
-
-        return baseColumns.map((column) => {
-            const dataIndex = 'dataIndex' in column ? column.dataIndex : undefined;
-            const columnKey = String(column.key ?? dataIndex ?? '');
-            return {
-                ...column,
-                onHeaderCell: () => ({
-                    width: typeof column.width === 'number' ? column.width : undefined,
-                    minWidth: COLUMN_MIN_WIDTHS[columnKey] ?? 90,
-                    onResize: (nextWidth: number) => resizeColumn(columnKey, nextWidth),
-                }),
-            };
-        });
-    }, [columnWidths, getDeleteMenuItems, handleReset, handleViewLog, resizeColumn, setSearchText]);
-
-    const totalColumnWidth = useMemo(
-        () => Object.values(columnWidths).reduce((sum, width) => sum + width, 64),
-        [columnWidths]
-    );
-
-    const rowSelection = {
-        preserveSelectedRowKeys: true,
-        selectedRowKeys,
-        onChange: (keys: React.Key[]) => setSelectedRowKeys(keys),
-    };
-
-    const hasSelected = selectedRowKeys.length > 0;
-
-    const getLogLevelColor = (level: string) => {
-        if (level === 'error') return '#fb7185';
-        if (level === 'success') return '#22c55e';
-        if (level === 'warning') return '#f59e0b';
-        return '#38bdf8';
-    };
-
-    const handleTableChange = (pagination: TablePaginationConfig) => {
-        setCurrentPage(pagination.current || 1);
-        setPageSize(pagination.pageSize || DEFAULT_PAGE_SIZE);
-    };
-
-    const connectionTagColor = useMemo(() => {
-        if (connectionState === 'connected') return 'success';
-        if (connectionState === 'reconnecting') return 'processing';
-        if (connectionState === 'connecting') return 'processing';
-        return 'warning';
-    }, [connectionState]);
-
-    return (
-        <div className="space-y-6">
-            <section className="console-hero">
-                <div>
-                    <div className="console-kicker">Task Center</div>
-                    <h1 className="console-title">任务中心</h1>
-                    <p className="console-description">
-                        在这里筛选任务、查看下载结果、重试失败项目，并按需删除记录或文件。
-                    </p>
-                </div>
-                <div className="console-actions">
-                    <Tag color={connectionTagColor}>{connectionState === 'connected' ? '实时链路正常' : connectionState === 'reconnecting' ? '实时链路重连中' : '实时链路建立中'}</Tag>
-                    <Button
-                        icon={<SyncOutlined />}
-                        onClick={() => {
-                            void refreshCurrentPage();
-                        }}
-                        loading={loading}
-                    >
-                        刷新当前页
-                    </Button>
-                    <Popconfirm
-                        title="确定删除所有画廊记录？"
-                        description="此操作不可恢复"
-                        onConfirm={handleDeleteAll}
-                        okText="确定"
-                        cancelText="取消"
-                    >
-                        <Button danger>清空所有</Button>
-                    </Popconfirm>
-                </div>
-            </section>
-
-            <Card className="console-card" bordered={false}>
-                <Row gutter={[16, 16]}>
-                    <Col xs={24} lg={8}>
-                        <Input
-                            placeholder="搜索 GID、标题或旧版本 GID..."
-                            prefix={<SearchOutlined />}
-                            value={searchText}
-                            onChange={(event) => {
-                                setSearchText(event.target.value);
-                                setCurrentPage(1);
-                            }}
-                            allowClear
-                        />
-                    </Col>
-                    <Col xs={24} sm={12} lg={4}>
-                        <Select
-                            style={{ width: '100%' }}
-                            value={statusFilter}
-                            onChange={(value) => {
-                                setStatusFilter(value);
-                                setCurrentPage(1);
-                            }}
-                            options={statusOptions}
-                        />
-                    </Col>
-                    <Col xs={24} sm={12} lg={12}>
-                        {hasSelected ? (
-                            <Space wrap>
-                                <span className="text-sm text-[var(--app-text-muted)]">
-                                    已选择 {selectedRowKeys.length} 项
-                                </span>
-                                <Button
-                                    onClick={() => {
-                                        void handleBatchReset();
-                                    }}
-                                    icon={<ReloadOutlined />}
-                                >
-                                    批量重试
-                                </Button>
-                                <Popconfirm
-                                    title={`确定删除 ${selectedRowKeys.length} 条记录？`}
-                                    onConfirm={handleBatchDeleteRecord}
-                                    okText="确定"
-                                    cancelText="取消"
-                                >
-                                    <Button icon={<DeleteOutlined />}>批量删除记录</Button>
-                                </Popconfirm>
-                                <Popconfirm
-                                    title={`确定删除 ${selectedRowKeys.length} 条记录及其文件？`}
-                                    description="此操作将终止下载并删除已下载文件"
-                                    onConfirm={handleBatchDeleteWithFiles}
-                                    okText="确定"
-                                    cancelText="取消"
-                                >
-                                    <Button danger icon={<FolderOpenOutlined />}>
-                                        批量删除(含文件)
-                                    </Button>
-                                </Popconfirm>
-                            </Space>
-                        ) : (
-                            <div className="text-sm text-[var(--app-text-muted)]">
-                                当前列表共 {total} 条记录
-                            </div>
-                        )}
-                    </Col>
-                </Row>
-            </Card>
-
-            <Card className="console-card console-card--elevated" bordered={false}>
-                {data.length === 0 && !loading ? (
-                    <Empty description="当前筛选条件下没有画廊记录" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-                ) : (
-                    <Table
-                        components={{ header: { cell: ResizableHeaderCell } }}
-                        rowSelection={rowSelection}
-                        columns={columns}
-                        dataSource={data}
-                        rowKey="gid"
-                        loading={loading}
-                        size="middle"
-                        tableLayout="fixed"
-                        scroll={{ x: totalColumnWidth }}
-                        pagination={{
-                            current: currentPage,
-                            pageSize,
-                            total,
-                            showSizeChanger: true,
-                            pageSizeOptions: ['10', '20', '50', '100'],
-                            showTotal: (count, range) => `第 ${range[0]}-${range[1]} 条，共 ${count} 条`,
-                        }}
-                        onChange={handleTableChange}
-                    />
-                )}
-            </Card>
-
-            <Modal
-                title={`下载日志 - ${currentLogGallery?.title?.substring(0, 50) || ''}`}
-                open={logModalVisible}
-                onCancel={() => setLogModalVisible(false)}
-                footer={null}
-                width={760}
-            >
-                {logError && (
-                    <div className="mb-4 rounded-2xl border border-rose-400/30 bg-rose-500/10 p-4 text-sm text-rose-500">
-                        {logError}
-                    </div>
-                )}
-
-                {buildQualitySummary(currentLogGallery?.requested_quality, currentLogGallery?.resolved_quality) && (
-                    <div className="mb-4 rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-soft)] p-4 text-sm text-[var(--app-text-secondary)]">
-                        {buildQualitySummary(currentLogGallery?.requested_quality, currentLogGallery?.resolved_quality)}
-                    </div>
-                )}
-
-                {logLoading ? (
-                    <div className="py-10 text-center text-[var(--app-text-muted)]">日志加载中...</div>
-                ) : logEntries.length === 0 ? (
-                    <div className="py-10 text-center text-[var(--app-text-muted)]">暂无日志</div>
-                ) : (
-                    <div className="space-y-3">
-                        {logEntries.map((entry, index) => (
-                            <div key={`${entry.time}-${index}`} className="task-log-entry">
-                                <div className="task-log-entry__time">
-                                    {new Date(entry.time).toLocaleTimeString()}
-                                </div>
-                                <div className="task-log-entry__body">
-                                    <Typography.Text style={{ color: getLogLevelColor(entry.level) }}>
-                                        [{entry.level.toUpperCase()}]
-                                    </Typography.Text>
-                                    <Typography.Text className="!ml-2 !text-[var(--app-text-primary)]">
-                                        {entry.msg}
-                                    </Typography.Text>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                )}
-            </Modal>
+      else toast.success(operation === "reset" ? "已重新加入队列" : "已删除");
+      setSelected([]);
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+  const allSelected =
+    !!data?.items.length &&
+    data.items.every((item) => selected.includes(item.gid));
+  const headers = [
+    "选择",
+    "画廊",
+    "状态",
+    "下载进度",
+    "画质",
+    "完成时间",
+    "操作",
+  ];
+  return (
+    <div className="space-y-7">
+      <div className="flex flex-wrap justify-between gap-4">
+        <div>
+          <p className="mb-2 text-xs tracking-[.18em] text-muted-foreground">
+            LIBRARY
+          </p>
+          <h1 className="page-heading">下载任务</h1>
+          <p className="page-description">
+            共 {data?.total ?? "—"} 个任务。重试将使用当前下载设置。
+          </p>
         </div>
-    );
-};
-
-export default Galleries;
+        <Button variant="outline" onClick={() => void refresh()}>
+          <RefreshCw />
+          刷新
+        </Button>
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <form
+          className="relative w-full sm:w-80"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setSearch(draft.trim());
+            setPage(1);
+            setSelected([]);
+          }}
+        >
+          <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
+          <Input
+            className="pl-9"
+            aria-label="搜索任务"
+            placeholder="搜索标题或 GID，按回车查询"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+          />
+        </form>
+        <Select
+          value={filter}
+          onValueChange={(value) => {
+            setFilter(value);
+            setPage(1);
+            setSelected([]);
+          }}
+        >
+          <SelectTrigger className="w-36" aria-label="筛选状态">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部状态</SelectItem>
+            {Object.entries(statusLabels)
+              .filter(([key]) => key !== "cancelled")
+              .map(([key, label]) => (
+                <SelectItem key={key} value={key}>
+                  {label}
+                </SelectItem>
+              ))}
+          </SelectContent>
+        </Select>
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">
+            {selected.length ? selected.length + " 项已选" : ""}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!selected.length || busy}
+            onClick={() => void action(selected, "reset")}
+          >
+            <RefreshCw />
+            重试
+          </Button>
+          <ConfirmAction
+            title="删除选中的任务？"
+            description="仅删除任务记录，保留已下载文件。"
+            action={() => action(selected, "delete")}
+          >
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!selected.length || busy}
+            >
+              <Trash2 />
+              删除
+            </Button>
+          </ConfirmAction>
+          <ConfirmAction
+            title="清空全部任务记录？"
+            description="将取消正在下载的任务并清空列表，保留已下载文件。"
+            action={async () => {
+              await api.delete("/galleries", { params: { confirm: true } });
+              setSelected([]);
+              setPage(1);
+              await mutate();
+              toast.success("任务记录已清空");
+            }}
+          >
+            <Button variant="ghost" size="sm" disabled={!data?.total}>
+              清空记录
+            </Button>
+          </ConfirmAction>
+        </div>
+      </div>
+      {error && <ErrorPanel error={error} retry={() => void refresh()} />}
+      <div className="overflow-hidden rounded-xl border bg-card">
+        <Table
+          style={{
+            tableLayout: "fixed",
+            minWidth: widths.reduce((a, b) => a + b, 0),
+          }}
+        >
+          <TableHeader>
+            <TableRow className="bg-muted/40">
+              {headers.map((label, index) => (
+                <TableHead
+                  key={label}
+                  style={{ width: widths[index] }}
+                  className="relative h-12 px-4"
+                >
+                  {index === 0 ? (
+                    <Checkbox
+                      aria-label="选择本页全部任务"
+                      checked={allSelected}
+                      onCheckedChange={(checked) =>
+                        setSelected(
+                          checked
+                            ? data?.items.map((item) => item.gid) || []
+                            : [],
+                        )
+                      }
+                    />
+                  ) : (
+                    label
+                  )}
+                  {index > 0 && index < 6 && (
+                    <button
+                      aria-label={"调整" + label + "列宽"}
+                      className="absolute right-0 top-0 h-full w-2 touch-none cursor-col-resize border-r border-transparent hover:border-primary"
+                      onPointerDown={(event) => {
+                        drag.current = {
+                          index,
+                          x: event.clientX,
+                          width: widths[index],
+                        };
+                        event.currentTarget.setPointerCapture(event.pointerId);
+                      }}
+                      onPointerMove={(event) => {
+                        if (drag.current?.index === index) {
+                          const width = Math.min(
+                            1000,
+                            Math.max(
+                              90,
+                              drag.current.width +
+                                event.clientX -
+                                drag.current.x,
+                            ),
+                          );
+                          setWidths((current) =>
+                            current.map((value, i) =>
+                              i === index ? width : value,
+                            ),
+                          );
+                        }
+                      }}
+                      onPointerUp={() => {
+                        drag.current = null;
+                      }}
+                      onKeyDown={(event) => {
+                        if (
+                          event.key === "ArrowRight" ||
+                          event.key === "ArrowLeft"
+                        ) {
+                          event.preventDefault();
+                          setWidths((current) =>
+                            current.map((value, i) =>
+                              i === index
+                                ? Math.max(
+                                    90,
+                                    value +
+                                      (event.key === "ArrowRight" ? 16 : -16),
+                                  )
+                                : value,
+                            ),
+                          );
+                        }
+                      }}
+                    />
+                  )}
+                </TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading ? (
+              <TableRow>
+                <TableCell colSpan={7}>
+                  <Loading />
+                </TableCell>
+              </TableRow>
+            ) : !data?.items.length ? (
+              <TableRow>
+                <TableCell
+                  colSpan={7}
+                  className="h-60 text-center text-muted-foreground"
+                >
+                  没有符合条件的任务
+                </TableCell>
+              </TableRow>
+            ) : (
+              data.items.map((item) => (
+                <TableRow
+                  key={item.gid}
+                  data-state={
+                    selected.includes(item.gid) ? "selected" : undefined
+                  }
+                >
+                  <TableCell className="px-4">
+                    <Checkbox
+                      aria-label={"选择任务 " + item.gid}
+                      checked={selected.includes(item.gid)}
+                      onCheckedChange={(checked) =>
+                        setSelected((current) =>
+                          checked
+                            ? [...current, item.gid]
+                            : current.filter((id) => id !== item.gid),
+                        )
+                      }
+                    />
+                  </TableCell>
+                  <TableCell className="whitespace-normal px-4 py-4">
+                    <button
+                      className="line-clamp-2 text-left text-sm font-medium break-all hover:underline"
+                      onClick={() => setCurrent(item)}
+                      title={item.title}
+                    >
+                      {item.title}
+                    </button>
+                    <div className="mt-1.5 flex gap-3 text-xs text-muted-foreground">
+                      <span className="font-mono">#{item.gid}</span>
+                      <span>{item.filecount || "—"} 页</span>
+                      {item.parent_gid && (
+                        <span>更新自 #{item.parent_gid}</span>
+                      )}
+                    </div>
+                    {item.error_msg && (
+                      <p
+                        className="mt-2 truncate text-xs text-destructive"
+                        title={item.error_msg}
+                      >
+                        {item.error_msg}
+                      </p>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <StatusPill status={item.status} />
+                  </TableCell>
+                  <TableCell className="px-4">
+                    <GalleryProgressPanel progress={item.progress} compact />
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {item.resolved_quality === "original"
+                      ? "原图"
+                      : item.resolved_quality === "native"
+                        ? "展示图"
+                        : item.requested_quality === "original"
+                          ? "请求原图"
+                          : "—"}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {dateText(item.downloaded_at)}
+                  </TableCell>
+                  <TableCell>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          aria-label={"任务 " + item.gid + " 操作"}
+                        >
+                          <MoreHorizontal />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => setCurrent(item)}>
+                          <FileText />
+                          详情与日志
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <a
+                            className="flex items-center gap-2"
+                            target="_blank"
+                            rel="noreferrer"
+                            href={
+                              "https://e-hentai.org/g/" +
+                              item.gid +
+                              "/" +
+                              item.token +
+                              "/"
+                            }
+                          >
+                            <ExternalLink className="size-4" />
+                            打开画廊
+                          </a>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => void action([item.gid], "reset")}
+                        >
+                          <RefreshCw />
+                          重新下载
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={() => {
+                            setSelected([item.gid]);
+                            setCurrent(item);
+                          }}
+                        >
+                          <Trash2 />
+                          删除选项
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t px-4 py-3 text-xs text-muted-foreground">
+          <span>
+            第 {page} / {Math.max(1, Math.ceil((data?.total || 0) / size))} 页
+          </span>
+          <div className="flex items-center gap-3">
+            <Select
+              value={String(size)}
+              onValueChange={(value) => {
+                setSize(Number(value));
+                setPage(1);
+                setSelected([]);
+              }}
+            >
+              <SelectTrigger className="h-8 w-28" aria-label="每页数量">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {[20, 50, 100, 200].map((value) => (
+                  <SelectItem key={value} value={String(value)}>
+                    {value} 条 / 页
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="上一页"
+              disabled={page === 1}
+              onClick={() => {
+                setPage(page - 1);
+                setSelected([]);
+              }}
+            >
+              <ChevronLeft />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="下一页"
+              disabled={page * size >= (data?.total || 0)}
+              onClick={() => {
+                setPage(page + 1);
+                setSelected([]);
+              }}
+            >
+              <ChevronRight />
+            </Button>
+          </div>
+        </div>
+      </div>
+      <Dialog
+        open={!!current}
+        onOpenChange={(open) => {
+          if (!open) setCurrent(null);
+        }}
+      >
+        <DialogContent className="max-h-[85svh] overflow-auto sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="pr-6 leading-7 break-all">
+              {current?.title}
+            </DialogTitle>
+            <DialogDescription>
+              任务 #{current?.gid} · {current?.filecount || "—"} 页
+            </DialogDescription>
+          </DialogHeader>
+          {current && (
+            <>
+              <div className="space-y-3 rounded-lg bg-muted/50 p-4 text-sm">
+                <StatusPill status={current.status} />
+                <div className="break-all">
+                  <span className="text-muted-foreground">输出路径：</span>
+                  {current.download_path || "尚未生成文件"}
+                </div>
+                {current.error_msg && (
+                  <p className="text-destructive">{current.error_msg}</p>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void action([current.gid], "reset")}
+                  >
+                    <RefreshCw />
+                    按当前设置重试
+                  </Button>
+                  <ConfirmAction
+                    title="删除任务记录？"
+                    description="保留已下载的文件。"
+                    action={async () => {
+                      await action([current.gid], "delete");
+                      setCurrent(null);
+                    }}
+                  >
+                    <Button size="sm" variant="outline">
+                      仅删除记录
+                    </Button>
+                  </ConfirmAction>
+                  <ConfirmAction
+                    title="删除任务和文件？"
+                    description="已下载归档与该任务的断点数据也会删除。"
+                    action={async () => {
+                      await action([current.gid], "files");
+                      setCurrent(null);
+                    }}
+                  >
+                    <Button size="sm" variant="destructive">
+                      同时删除文件
+                    </Button>
+                  </ConfirmAction>
+                </div>
+              </div>
+              <h2 className="mt-2 text-sm font-medium">下载日志</h2>
+              {loadingLog ? (
+                <Loading />
+              ) : logError ? (
+                <ErrorPanel error={logError} />
+              ) : (
+                <div className="space-y-3 text-xs">
+                  {logs?.logs.length ? (
+                    logs.logs.map((entry, i) => (
+                      <div key={i} className="grid gap-1 border-l-2 pl-3">
+                        <time className="font-mono text-muted-foreground">
+                          {dateText(entry.time)}
+                        </time>
+                        <p
+                          className={
+                            "whitespace-pre-wrap break-all " +
+                            (entry.level === "error" ? "text-destructive" : "")
+                          }
+                        >
+                          {entry.msg}
+                        </p>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="py-6 text-muted-foreground">暂无日志</p>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

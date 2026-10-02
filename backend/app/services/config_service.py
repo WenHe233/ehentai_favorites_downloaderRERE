@@ -58,7 +58,7 @@ class ConfigService:
                         stop_scheduler()
                 except Exception as e:
                     logger.error(f"Error toggling scheduler: {e}")
-        
+
         # 4. Bot - Restart if token changed (lazy import)
         if "telegram_bot_token" in sanitized_settings:
             current_token = sanitized_settings["telegram_bot_token"]

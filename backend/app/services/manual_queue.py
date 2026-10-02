@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -116,6 +117,9 @@ async def queue_manual_gallery(url: str, db: AsyncSession) -> ManualQueueResult:
     url = url.strip()
     if not url:
         raise ValueError("链接不能为空")
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname not in {"e-hentai.org", "exhentai.org"}:
+        raise ValueError("请输入 E-Hentai 或 ExHentai 的 HTTPS 画廊链接")
 
     original_match = re.search(r"/g/(\d+)/(\w+)/?", url)
     if not original_match:
@@ -125,95 +129,99 @@ async def queue_manual_gallery(url: str, db: AsyncSession) -> ManualQueueResult:
     runtime_download_mode = await _get_runtime_download_mode()
     actual_gid, actual_token, metadata, has_newer_version = await _fetch_gallery_metadata(url)
 
-    stmt = select(Gallery).where(Gallery.gid == actual_gid)
-    result = await db.execute(stmt)
-    existing = result.scalar_one_or_none()
+    from app.services.downloader import downloader
+    async with downloader.queue_lock:
+        stmt = select(Gallery).where(Gallery.gid == actual_gid)
+        result = await db.execute(stmt)
+        existing = result.scalar_one_or_none()
 
-    title = str(metadata.get("title") or f"Gallery {actual_gid}")
+        title = str(metadata.get("title") or f"Gallery {actual_gid}")
 
-    if existing:
-        existing.token = actual_token
-        _apply_metadata(
-            existing,
-            metadata,
-            original_gid=original_gid,
-            has_newer_version=has_newer_version,
-            download_mode=runtime_download_mode,
-        )
+        if existing:
+            if existing.status == DownloadStatus.DOWNLOADING:
+                return ManualQueueResult(status="Exists", message="该画廊正在下载", gid=existing.gid, token=existing.token, title=existing.title)
+            existing.token = actual_token
+            _apply_metadata(
+                existing,
+                metadata,
+                original_gid=original_gid,
+                has_newer_version=has_newer_version,
+                download_mode=runtime_download_mode,
+            )
 
-        if existing.status in [DownloadStatus.COMPLETED, DownloadStatus.ARCHIVED]:
+            if existing.status in [DownloadStatus.COMPLETED, DownloadStatus.ARCHIVED]:
+                await db.commit()
+                if has_newer_version:
+                    return ManualQueueResult(
+                        status="Exists",
+                        message=f"新版本画廊已存在且已完成: {title[:50]} (gid={actual_gid})",
+                        gid=actual_gid,
+                        token=actual_token,
+                        title=title,
+                        has_newer_version=True,
+                    )
+                return ManualQueueResult(
+                    status="Exists",
+                    message=f"画廊已存在且已完成: {title[:50]}",
+                    gid=actual_gid,
+                    token=actual_token,
+                    title=title,
+                )
+
+            existing.status = DownloadStatus.PENDING
+            existing.priority = 10
+            existing.error_msg = None
+            existing.requested_quality = None
+            existing.resolved_quality = None
             await db.commit()
             if has_newer_version:
                 return ManualQueueResult(
-                    status="Exists",
-                    message=f"新版本画廊已存在且已完成: {title[:50]} (gid={actual_gid})",
+                    status="Queued",
+                    message=f"检测到新版本，已重置并加入下载队列: {title[:50]} (gid={actual_gid})",
                     gid=actual_gid,
                     token=actual_token,
                     title=title,
                     has_newer_version=True,
                 )
             return ManualQueueResult(
-                status="Exists",
-                message=f"画廊已存在且已完成: {title[:50]}",
+                status="Queued",
+                message=f"已重置并加入下载队列: {title[:50]}",
                 gid=actual_gid,
                 token=actual_token,
                 title=title,
             )
 
-        existing.status = DownloadStatus.PENDING
-        existing.priority = 10
-        existing.error_msg = None
-        existing.requested_quality = None
-        existing.resolved_quality = None
+        new_gallery = Gallery(
+            gid=actual_gid,
+            token=actual_token,
+            title=title,
+            title_jpn=metadata.get("title_jpn"),
+            category=metadata.get("category") or "Manual",
+            uploader=metadata.get("uploader"),
+            posted=metadata.get("posted") or datetime.now(timezone.utc),
+            filecount=int(metadata.get("filecount") or 0),
+            tags=metadata.get("tags"),
+            status=DownloadStatus.PENDING,
+            priority=10,
+            download_mode=runtime_download_mode,
+            parent_gid=str(original_gid) if has_newer_version else None,
+        )
+        db.add(new_gallery)
         await db.commit()
+
         if has_newer_version:
             return ManualQueueResult(
-                status="Queued",
-                message=f"检测到新版本，已重置并加入下载队列: {title[:50]} (gid={actual_gid})",
+                status="Added",
+                message=f"检测到新版本，已加入下载队列: {title[:50]} (gid={actual_gid})",
                 gid=actual_gid,
                 token=actual_token,
                 title=title,
                 has_newer_version=True,
             )
         return ManualQueueResult(
-            status="Queued",
-            message=f"已重置并加入下载队列: {title[:50]}",
-            gid=actual_gid,
-            token=actual_token,
-            title=title,
-        )
-
-    new_gallery = Gallery(
-        gid=actual_gid,
-        token=actual_token,
-        title=title,
-        title_jpn=metadata.get("title_jpn"),
-        category=metadata.get("category") or "Manual",
-        uploader=metadata.get("uploader"),
-        posted=metadata.get("posted") or datetime.now(timezone.utc),
-        filecount=int(metadata.get("filecount") or 0),
-        tags=metadata.get("tags"),
-        status=DownloadStatus.PENDING,
-        priority=10,
-        download_mode=runtime_download_mode,
-        parent_gid=str(original_gid) if has_newer_version else None,
-    )
-    db.add(new_gallery)
-    await db.commit()
-
-    if has_newer_version:
-        return ManualQueueResult(
             status="Added",
-            message=f"检测到新版本，已加入下载队列: {title[:50]} (gid={actual_gid})",
+            message=f"已加入下载队列: {title[:50]}",
             gid=actual_gid,
             token=actual_token,
             title=title,
-            has_newer_version=True,
         )
-    return ManualQueueResult(
-        status="Added",
-        message=f"已加入下载队列: {title[:50]}",
-        gid=actual_gid,
-        token=actual_token,
-        title=title,
-    )

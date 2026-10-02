@@ -1,6 +1,6 @@
 # ehentai_favorites_downloaderRERE Frontend
 
-前端控制台基于 `React + Vite + Ant Design`，负责提供下载任务中心、仪表盘、系统设置、登录和实时状态展示。
+前端控制台基于 `React + Vite + shadcn/ui + Tailwind CSS 4`，负责提供下载任务中心、仪表盘、系统设置、登录和实时状态展示。
 
 ## 主要页面
 
@@ -68,3 +68,8 @@ npm run build
 - 如果需要直连调试后端，可通过 `VITE_API_BASE_URL` 手动覆盖
 
 更完整的项目说明见仓库根目录的 [README.md](../README.md)。
+
+开发服务器自动将 /api 请求代理到 http://127.0.0.1:8000。
+界面版本由根目录 VERSION 在构建时注入。
+单元测试运行 npm test，浏览器测试运行 npm run test:e2e。
+Docker 构建需以仓库根目录为上下文：docker build -f frontend/Dockerfile .

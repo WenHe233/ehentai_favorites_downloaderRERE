@@ -76,6 +76,10 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 - `/app/data`
 - `/app/downloads`
 
+Compose 示例将宿主机 backend 目录挂载到 /app/userdata，并设置 EFDRR_DATA_ROOT。
+这样仍使用原来的 backend/config.yaml、backend/data 和 backend/downloads，同时允许配置文件原子替换。
+升级旧 Compose 时，应采用新的目录挂载方式，避免单独绑定 config.yaml 导致文件替换失败。
+
 ## 运行维护
 
 ### 自检
@@ -110,3 +114,10 @@ python scripts/cleanup_legacy_state.py --all
 - 日志文件
 
 根目录 `.gitignore` 已经包含这些规则，但上传前仍建议再检查一次工作区。
+
+## 桌面与测试运行
+
+EFDRR_DATA_ROOT 可指定配置和数据根目录；EFDRR_RESOURCE_ROOT 指定包含 VERSION 的程序资源根目录。
+桌面启动器自动设置这两个路径，默认数据保存在程序旁。
+GET /api/v1/health 返回就绪状态与版本，不包含账号或下载详情。
+Docker 构建使用仓库根目录作为上下文：docker build -f backend/Dockerfile .

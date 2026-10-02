@@ -24,8 +24,8 @@ def authenticate_admin(username: str, password: str) -> Optional[Dict[str, Any]]
         return {"username": settings.ADMIN_USERNAME, "auth_enabled": False}
 
     if not (
-        secrets.compare_digest(username, settings.ADMIN_USERNAME)
-        and secrets.compare_digest(password, settings.ADMIN_PASSWORD)
+        secrets.compare_digest(username.encode(), settings.ADMIN_USERNAME.encode())
+        and secrets.compare_digest(password.encode(), settings.ADMIN_PASSWORD.encode())
     ):
         return None
 
@@ -66,7 +66,7 @@ async def require_authenticated_user(
     except JWTError as exc:
         raise credentials_exception from exc
 
-    if not username or not secrets.compare_digest(username, settings.ADMIN_USERNAME):
+    if not isinstance(username, str) or not secrets.compare_digest(username.encode(), settings.ADMIN_USERNAME.encode()):
         raise credentials_exception
 
     return {"username": username, "auth_enabled": True}

@@ -15,17 +15,17 @@ class EHParser:
         """
         soup = BeautifulSoup(html, "lxml")
         galleries = []
-        
+
         # Find the main gallery table (correct selector from reference)
         table = soup.select_one("table.itg.gltc")
         if not table:
             # Try alternative: compact table format
             table = soup.select_one("table.itg")
-            
+
         if not table:
             logger.warning("No gallery table found in HTML")
             return [], None
-            
+
         for tr in table.select("tr"):
             try:
                 # Find gallery link (correct selector from reference)
@@ -37,18 +37,18 @@ class EHParser:
                     a = tr.select_one("a[href*='/g/']")
                 if not a:
                     continue
-                    
+
                 href = a.get("href", "")
                 m = re.search(r"/g/(\d+)/(\w+)/", href)
                 if not m:
                     continue
-                    
+
                 gid = int(m.group(1))
                 token = m.group(2)
-                
+
                 # Debug: log anchor HTML
                 logger.debug(f"Anchor HTML for gid={gid}: {str(a)[:200]}...")
-                
+
                 # Get title - simple approach from reference project
                 glink = a.select_one("div.glink")
                 if glink:
@@ -66,16 +66,16 @@ class EHParser:
                             tag_text = tag_div.get_text(strip=True)
                             if tag_text and tag_text in title:
                                 title = title.replace(tag_text, '').strip()
-                
+
                 if not title:
                     title = f"Gallery {gid}"
                     logger.warning(f"Could not extract title for gid={gid}")
                 else:
                     logger.debug(f"Extracted title for {gid}: {title[:50]}...")
-                
+
                 # Get tags (separate from title)
                 tags = [t.get_text(strip=True) for t in a.select("div.gt")]
-                
+
                 # Get favorited time
                 fav = None
                 tds = tr.find_all("td", recursive=False)
@@ -85,7 +85,7 @@ class EHParser:
                     m_fav = re.search(r"\b\d{4}-\d{2}-\d{2} \d{2}:\d{2}\b", block)
                     if m_fav:
                         fav = m_fav.group(0)
-                
+
                 # Fallback for favorited time
                 if not fav:
                     published_td = tr.select_one("td.gl2c")
@@ -97,7 +97,7 @@ class EHParser:
                         if m_fav:
                             fav = m_fav.group(0)
                             break
-                
+
                 galleries.append({
                     "gid": gid,
                     "token": token,
@@ -109,13 +109,13 @@ class EHParser:
             except Exception as e:
                 logger.warning(f"Failed to parse row: {e}")
                 continue
-        
+
         # Find next page URL
         next_url = None
         nxt = soup.select_one("#unext")
         if nxt and nxt.get("href"):
             next_url = nxt.get("href")
-        
+
         if not next_url:
             for sc in soup.select("script"):
                 txt = sc.text or ""
@@ -123,7 +123,7 @@ class EHParser:
                 if m:
                     next_url = m.group(1)
                     break
-        
+
         logger.debug(f"Parsed {len(galleries)} galleries from HTML, next_url: {next_url is not None}")
         return galleries, next_url
 
@@ -131,19 +131,19 @@ class EHParser:
     def parse_gallery_detail(html: str) -> Dict:
         soup = BeautifulSoup(html, "lxml")
         info = {}
-        
+
         # Titles
         gn = soup.select_one("#gn")
         info["title"] = gn.get_text(strip=True) if gn else ""
         gj = soup.select_one("#gj")
         info["title_jpn"] = gj.get_text(strip=True) if gj else ""
-        
+
         # Category & Uploader
         cat = soup.select_one("#gdc")
         info["category"] = cat.get_text(strip=True) if cat else "Unknown"
         upl = soup.select_one("#gdn")
         info["uploader"] = upl.get_text(strip=True) if upl else "Unknown"
-        
+
         # Meta
         gdd = soup.select("#gdd tr")
         for row in gdd:
@@ -217,7 +217,7 @@ class EHParser:
             val = submit.get("value", "")
             inp = form.select_one("input[name='dltype']")
             if not inp: continue
-            
+
             action = form.get("action", "")
             if "Original" in val:
                 options["original"] = {"dltype": inp["value"], "action": action}

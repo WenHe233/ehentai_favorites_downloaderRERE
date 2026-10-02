@@ -3,6 +3,10 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import os
+import tempfile
+import threading
+from functools import wraps
 from typing import Any, Dict, Optional
 
 import yaml
@@ -17,25 +21,20 @@ from app.core.output_template import (
 
 
 # ── PyInstaller / Desktop mode path detection ─────────────────────────
-_FROZEN = getattr(sys, "frozen", False)
+from app.core.runtime import BASE_DIR, RESOURCE_ROOT, FRONTEND_DIST_DIR
 
-if _FROZEN:
-    # Inside a PyInstaller bundle:
-    #   RUNTIME_DIR  = sys._MEIPASS  (temporary extraction folder with bundled data)
-    #   USER_DATA_DIR = directory containing the .exe (writable, persistent)
-    RUNTIME_DIR = Path(sys._MEIPASS)  # type: ignore[attr-defined]
-    USER_DATA_DIR = Path(sys.executable).parent
-    BASE_DIR = USER_DATA_DIR
-else:
-    # Normal development / Docker mode:
-    #   BASE_DIR = backend/ (grandparent of this file)
-    BASE_DIR = Path(__file__).resolve().parent.parent.parent
-    RUNTIME_DIR = BASE_DIR
-    USER_DATA_DIR = BASE_DIR
+RUNTIME_DIR = RESOURCE_ROOT
+USER_DATA_DIR = BASE_DIR
+CONFIG_PATH = BASE_DIR / "config.yaml"
+CONFIG_EXAMPLE_PATH = RESOURCE_ROOT / "backend" / "config.yaml.example"
 
-CONFIG_PATH = USER_DATA_DIR / "config.yaml"
-CONFIG_EXAMPLE_PATH = RUNTIME_DIR / "config.yaml.example"
-FRONTEND_DIST_DIR = RUNTIME_DIR / "frontend_dist"
+
+def synchronized(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._config_lock:
+            return method(self, *args, **kwargs)
+    return wrapped
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "app": {
@@ -377,6 +376,8 @@ def _render_commented_config(payload: Dict[str, Any]) -> str:
 
 class Settings:
     def __init__(self):
+        self._config_lock = threading.RLock()
+        self.initial_credentials = None
         self.BASE_DIR = BASE_DIR
         self.RUNTIME_DIR = RUNTIME_DIR
         self.USER_DATA_DIR = USER_DATA_DIR
@@ -388,6 +389,7 @@ class Settings:
         self.reload()
 
     def _ensure_config_file(self) -> None:
+        self.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         if self.CONFIG_PATH.exists():
             return
 
@@ -406,8 +408,38 @@ class Settings:
         return payload
 
     def _write_yaml(self, payload: Dict[str, Any]) -> None:
-        with self.CONFIG_PATH.open("w", encoding="utf-8") as f:
-            f.write(_render_commented_config(payload))
+        self.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.CONFIG_PATH.parent, delete=False) as f:
+                temp_path = Path(f.name)
+                f.write(_render_commented_config(payload))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, self.CONFIG_PATH)
+        finally:
+            if temp_path and temp_path.exists():
+                temp_path.unlink()
+
+    def _validated_copy(self, payload: Dict[str, Any]):
+        candidate = object.__new__(Settings)
+        candidate.__dict__ = self.__dict__.copy()
+        try:
+            download = payload["download"]
+            for field, minimum, maximum in (("max_concurrent_downloads", 1, 32), ("max_retries", 0, 20)):
+                value = download[field]
+                if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+                    raise ValueError(f"{field} 必须是 {minimum} 到 {maximum} 之间的整数")
+            if payload["site"]["domain"] not in {"e-hentai.org", "exhentai.org"}:
+                raise ValueError("站点域名必须是 e-hentai.org 或 exhentai.org")
+            if not isinstance(payload["sync"]["interval_minutes"], int) or payload["sync"]["interval_minutes"] < 1:
+                raise ValueError("同步间隔必须大于 0")
+            if any(not isinstance(cat, int) or not 0 <= cat <= 9 for cat in payload["sync"]["monitored_favcats"]):
+                raise ValueError("收藏夹分类必须在 0 到 9 之间")
+            candidate._apply(payload)
+        except (TypeError, KeyError, AttributeError) as exc:
+            raise ValueError("配置类型无效，请检查必填项与数值") from exc
+        return candidate
 
     def _resolve_path(self, value: Any, default_name: str) -> Path:
         raw = _normalize_optional_string(value)
@@ -538,10 +570,11 @@ class Settings:
             telegram_quiet_hours_cfg.get("end")
         ) or "08:00"
 
+    @synchronized
     def reload(self, force: bool = False) -> Dict[str, Any]:
         if not force and self._raw_config:
             try:
-                current_mtime = self.CONFIG_PATH.stat().st_mtime
+                current_mtime = self.CONFIG_PATH.stat().st_mtime_ns
                 if current_mtime == self._config_mtime:
                     return deepcopy(self._raw_config)
             except OSError:
@@ -561,15 +594,14 @@ class Settings:
             new_password = _secrets.token_urlsafe(16)
             security_cfg["admin_password"] = new_password
             config_changed = True
-            logger.warning(
-                f"Default admin password detected. Auto-generated new password: {new_password}  "
-                "Please save this password or change it in config.yaml."
-            )
+            self.initial_credentials = (security_cfg.get("admin_username", "admin"), new_password)
+            logger.warning("已生成初始管理员密码，可在本机 config.yaml 中查看或修改。")
+        candidate = self._validated_copy(config_data)
         if config_changed:
             self._write_yaml(config_data)
-        self._apply(config_data)
+        self.__dict__.update(candidate.__dict__)
         try:
-            self._config_mtime = self.CONFIG_PATH.stat().st_mtime
+            self._config_mtime = self.CONFIG_PATH.stat().st_mtime_ns
         except OSError:
             self._config_mtime = 0.0
         return deepcopy(self._raw_config)
@@ -581,6 +613,7 @@ class Settings:
             current = current[key]
         current[path[-1]] = value
 
+    @synchronized
     def update_runtime_settings(self, updates: Dict[str, Any]) -> Dict[str, Any]:
         config_data = _deep_merge(DEFAULT_CONFIG, self._read_yaml())
         for key, value in updates.items():
@@ -603,6 +636,7 @@ class Settings:
             max_length=download_cfg.get("filename_max_length", get_default_filename_max_length()),
         )
         _validate_notification_settings(config_data)
+        self._validated_copy(config_data)
         self._write_yaml(config_data)
         self.reload(force=True)
         return self.get_runtime_settings()

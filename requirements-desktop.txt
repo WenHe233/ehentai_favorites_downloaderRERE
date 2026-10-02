@@ -2,9 +2,4 @@
 # Install alongside backend/requirements.txt:
 #   pip install -r backend/requirements.txt -r requirements-desktop.txt
 
-pywebview>=5.0          # Native desktop window (uses Edge WebView2 on Windows)
-pystray>=0.19           # System tray icon
-Pillow>=10.0            # Image handling for tray icon
-
-# Build-time only (not needed at runtime):
-pyinstaller>=6.0
+-r desktop/requirements-windows.lock

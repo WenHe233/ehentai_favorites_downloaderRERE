@@ -1,18 +1,21 @@
-FROM python:3.12-slim
+FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    EFDRR_DATA_ROOT=/app \
+    EFDRR_RESOURCE_ROOT=/app
 
-WORKDIR /app
+WORKDIR /app/backend
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
+COPY backend/requirements.txt ./
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 
-COPY app ./app
-COPY scripts ./scripts
-COPY docs ./docs
-COPY config.yaml.example ./config.yaml.example
+COPY VERSION /app/VERSION
+COPY backend/app ./app
+COPY backend/scripts ./scripts
+COPY backend/docs ./docs
+COPY backend/config.yaml.example ./config.yaml.example
 
 RUN mkdir -p /app/data /app/downloads
 

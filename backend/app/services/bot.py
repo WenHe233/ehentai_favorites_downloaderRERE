@@ -152,7 +152,7 @@ async def start_bot():
     logger.info("Starting Telegram Bot polling...")
     try:
         _polling_task = asyncio.current_task()
-        await dp.start_polling(bot)
+        await dp.start_polling(bot, handle_signals=False)
     except asyncio.CancelledError:
         logger.info("Telegram Bot polling cancelled.")
         raise
@@ -189,4 +189,3 @@ async def stop_bot():
     bot = None
     dp = None
     _polling_task = None
-

@@ -5,6 +5,8 @@ Supports cancellation, cleanup, concurrent image downloads, and resumable partia
 import asyncio
 import json
 import re
+import os
+from urllib.parse import urljoin
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,6 +16,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tupl
 
 import aiofiles
 import httpx
+from app.core.http_cookies import site_cookies
 from bs4 import BeautifulSoup
 from loguru import logger
 
@@ -105,12 +108,18 @@ class NativeCrawler:
         for path in temp_dir.iterdir():
             if not path.is_file():
                 continue
-            match = re.match(r"^(\d{4})\.", path.name)
+            match = re.match(r"^(\d{4,})\.(jpg|jpeg|png|gif|webp)$", path.name, re.I)
             if not match:
                 continue
             index = int(match.group(1))
-            if 1 <= index <= total_pages:
-                downloaded_files[index] = path
+            if 1 <= index <= total_pages and path.stat().st_size:
+                try:
+                    from PIL import Image
+                    with Image.open(path) as image:
+                        image.verify()
+                    downloaded_files[index] = path
+                except (OSError, ValueError):
+                    continue
         return downloaded_files
 
     @staticmethod
@@ -129,7 +138,9 @@ class NativeCrawler:
     def _write_resume_manifest(temp_dir: Path, payload: Dict) -> None:
         temp_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = NativeCrawler._get_manifest_path(temp_dir)
-        manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary = manifest_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temporary, manifest_path)
 
     @staticmethod
     def _remove_file(path: Path) -> None:
@@ -230,7 +241,8 @@ class NativeCrawler:
         if temp_dir.exists():
             try:
                 import shutil
-
+                if not temp_dir.resolve().is_relative_to(NativeCrawler._get_resume_root().resolve()) or temp_dir.resolve() == NativeCrawler._get_resume_root().resolve():
+                    raise ValueError("断点目录不在指定数据目录内")
                 shutil.rmtree(temp_dir)
                 deleted += 1
             except Exception as e:
@@ -343,6 +355,11 @@ class NativeCrawler:
 
             temp_dir = NativeCrawler._get_temp_dir(gid)
             resume_manifest = NativeCrawler._load_resume_manifest(temp_dir)
+            identity = {"gid": gid, "token": match.group(2), "requested_quality": preferred_quality}
+            if temp_dir.exists() and (not resume_manifest or any(str(resume_manifest.get(key)) != str(value) for key, value in identity.items())):
+                NativeCrawler.cleanup_resume_artifacts(int(gid))
+                resume_manifest = None
+            NativeCrawler._write_resume_manifest(temp_dir, {**(resume_manifest or {}), **identity})
             overall_quality = str(resume_manifest.get("quality")) if resume_manifest and resume_manifest.get("quality") else preferred_quality
             if resume_manifest and resume_manifest.get("title") and not resolved_output_context.get("title"):
                 resolved_output_context["title"] = str(resume_manifest["title"])
@@ -357,6 +374,8 @@ class NativeCrawler:
                 return GalleryDownloadResult(False, None, "未解析到图片页面")
 
             total_pages = len(page_urls)
+            if detail.get("filecount", 0) > total_pages:
+                raise ValueError(f"图片页不完整：应有 {detail['filecount']} 页，仅解析到 {total_pages} 页")
             downloaded_files = NativeCrawler._scan_downloaded_files(temp_dir, total_pages)
             if output_template_settings and output_template_settings.conflict_strategy == "overwrite" and not downloaded_files:
                 NativeCrawler.cleanup_resume_artifacts(int(gid))
@@ -544,6 +563,7 @@ class NativeCrawler:
                         percent_span=8,
                     )
                     manifest_payload = {
+                        **identity,
                         "gid": gid,
                         "title": resolved_output_context.get("title"),
                         "total_pages": total_pages,
@@ -608,23 +628,23 @@ class NativeCrawler:
             if "/s/" in href:
                 page_urls.append(href)
 
-        next_pages: List[str] = []
-        for a in first_page_soup.select(".ptt a"):
-            href = a.get("href", "")
-            if href and "?p=" in href and href not in next_pages:
-                next_pages.append(href)
-
-        for page_url in next_pages[:-1]:
-            try:
-                html = await eh_client.get_html(page_url)
-                if html:
-                    soup = BeautifulSoup(html, "lxml")
-                    for a in soup.select("#gdt a"):
-                        href = a.get("href", "")
-                        if "/s/" in href and href not in page_urls:
-                            page_urls.append(href)
-            except Exception as e:
-                logger.warning(f"Failed to fetch gallery page: {e}")
+        pending = [urljoin(gallery_url, a["href"]) for a in first_page_soup.select(".ptt a[href]") if "?p=" in a["href"]]
+        visited = {gallery_url, gallery_url + "?p=0"}
+        while pending:
+            page_url = pending.pop(0)
+            if page_url in visited:
+                continue
+            visited.add(page_url)
+            html = await eh_client.get_html(page_url)
+            soup = BeautifulSoup(html, "lxml")
+            links = soup.select("#gdt a[href]")
+            if not links:
+                raise ValueError("缩略图分页加载失败，不能确认画廊完整性")
+            for a in links:
+                href = urljoin(gallery_url, a["href"])
+                if "/s/" in href and href not in page_urls:
+                    page_urls.append(href)
+            pending.extend(urljoin(gallery_url, a["href"]) for a in soup.select(".ptt a[href]") if "?p=" in a["href"] and urljoin(gallery_url, a["href"]) not in visited)
 
         return page_urls
 
@@ -641,7 +661,7 @@ class NativeCrawler:
         last_error = None
         last_image_url = None
 
-        for attempt in range(max_retries):
+        for attempt in range(max(1, max_retries + 1)):
             file_path: Optional[Path] = None
             try:
                 if attempt > 0:
@@ -692,7 +712,7 @@ class NativeCrawler:
                     cookies, proxy_url, user_agent = await NativeCrawler._build_request_context()
                     try:
                         async with httpx.AsyncClient(
-                            cookies=cookies,
+                            cookies=site_cookies(cookies),
                             proxy=proxy_url,
                             timeout=httpx.Timeout(connect=30.0, read=120.0, write=60.0, pool=30.0),
                             follow_redirects=True,
@@ -711,7 +731,8 @@ class NativeCrawler:
                                     continue
 
                                 bytes_written = 0
-                                async with aiofiles.open(file_path, "wb") as f:
+                                partial_image = file_path.with_suffix(file_path.suffix + ".part")
+                                async with aiofiles.open(partial_image, "wb") as f:
                                     async for chunk in response.aiter_bytes():
                                         if not chunk:
                                             continue
@@ -726,7 +747,7 @@ class NativeCrawler:
                                 NativeCrawler._remove_file(file_path)
                                 continue
 
-                            if bytes_written < 1000:
+                            if bytes_written == 0:
                                 last_error = f"Content too small ({bytes_written} bytes)"
                                 NativeCrawler._remove_file(file_path)
                                 continue
@@ -739,6 +760,15 @@ class NativeCrawler:
                             NativeCrawler._remove_file(file_path)
                         continue
 
+                    try:
+                        from PIL import Image
+                        with Image.open(partial_image) as image:
+                            image.verify()
+                        os.replace(partial_image, file_path)
+                    except (OSError, ValueError) as exc:
+                        last_error = f"图片校验失败: {exc}"
+                        NativeCrawler._remove_file(partial_image)
+                        continue
                     return ImageDownloadResult(file_path=file_path, image_url=img_url, quality=resolved_quality)
             except Exception as e:
                 last_error = str(e).strip() or e.__class__.__name__ or "下载失败"

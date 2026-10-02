@@ -13,6 +13,7 @@ import time
 from typing import Dict, Optional
 
 import httpx
+from app.core.http_cookies import site_cookies
 from loguru import logger
 
 EXHENTAI_URL = "https://exhentai.org/"
@@ -40,7 +41,7 @@ async def _httpx_refresh_igneous(
     }
     try:
         async with httpx.AsyncClient(
-            cookies=cookies,
+            cookies=site_cookies(cookies),
             follow_redirects=True,
             timeout=20.0,
             proxy=proxy_url,
@@ -60,7 +61,7 @@ async def _httpx_refresh_igneous(
             # Extract igneous from the client cookie jar
             igneous = client.cookies.get("igneous")
             if igneous and igneous not in ("", "mystery", "0"):
-                logger.info(f"igneous refreshed via httpx: {igneous}")
+                logger.info("igneous refreshed via httpx")
                 return igneous
 
             logger.warning("httpx igneous refresh: igneous not found in response cookies")
@@ -99,7 +100,7 @@ class CookieManager:
             from app.core.config import settings as cfg
             cfg.reload()
 
-            if not cfg.COOKIE_AUTO_REFRESH:
+            if not force and not cfg.COOKIE_AUTO_REFRESH:
                 logger.info("Cookie auto-refresh is disabled in config")
                 return None
 
@@ -127,7 +128,7 @@ class CookieManager:
         """Save igneous to config.yaml and close the EH client."""
         from app.core.config import settings as cfg
         cfg.update_runtime_settings({"igneous": igneous})
-        logger.info(f"Saved igneous to config: {igneous}")
+        logger.info("Saved refreshed igneous to config")
 
         # Close the EH client so it recreates with new cookies on next request
         try:

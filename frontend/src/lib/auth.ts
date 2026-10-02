@@ -1,17 +1,17 @@
-const AUTH_TOKEN_KEY = 'eh_auth_token';
+const AUTH_TOKEN_KEY = "eh_auth_token";
 
 export const getAuthToken = (): string | null => {
-    return window.localStorage.getItem(AUTH_TOKEN_KEY);
+  return window.localStorage.getItem(AUTH_TOKEN_KEY);
 };
 
 export const setAuthToken = (token: string) => {
-    window.localStorage.setItem(AUTH_TOKEN_KEY, token);
+  window.localStorage.setItem(AUTH_TOKEN_KEY, token);
 };
 
 export const clearAuthToken = () => {
-    window.localStorage.removeItem(AUTH_TOKEN_KEY);
+  window.localStorage.removeItem(AUTH_TOKEN_KEY);
 };
 
 export const notifyAuthUnauthorized = () => {
-    window.dispatchEvent(new Event('auth:unauthorized'));
+  window.dispatchEvent(new Event("auth:unauthorized"));
 };

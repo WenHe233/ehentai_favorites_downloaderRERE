@@ -45,6 +45,7 @@ def serialize_gallery(gallery: Gallery, progress_map: dict[int, dict]) -> dict:
         "filecount": gallery.filecount,
         "posted": gallery.posted,
         "downloaded_at": gallery.downloaded_at,
+        "download_path": gallery.download_path,
         "favorited_at": gallery.favorited_at,
         "error_msg": gallery.error_msg,
         "parent_gid": gallery.parent_gid,
@@ -194,6 +195,7 @@ async def stream_download_events(request: Request):
     )
 
 @router.delete("/galleries/{gid}")
+@downloader.serialize_queue_mutation
 async def delete_gallery(gid: int, db: AsyncSession = Depends(get_db)):
     """Delete a gallery record only (keep files)."""
     stmt = select(Gallery).where(Gallery.gid == gid)
@@ -213,6 +215,7 @@ async def delete_gallery(gid: int, db: AsyncSession = Depends(get_db)):
     return {"status": "Deleted", "gid": gid}
 
 @router.delete("/galleries/{gid}/with-files")
+@downloader.serialize_queue_mutation
 async def delete_gallery_with_files(gid: int, db: AsyncSession = Depends(get_db)):
     """Delete gallery record, cancel active download, and delete downloaded files."""
     stmt = select(Gallery).where(Gallery.gid == gid)
@@ -226,7 +229,7 @@ async def delete_gallery_with_files(gid: int, db: AsyncSession = Depends(get_db)
     settled = await downloader.cancel_and_wait(gid)
     if not settled:
         raise HTTPException(status_code=409, detail="Active download did not stop in time")
-    
+
     # Delete files
     deleted_files = downloader.delete_gallery_files(
         gid,
@@ -234,13 +237,13 @@ async def delete_gallery_with_files(gid: int, db: AsyncSession = Depends(get_db)
         gallery=gallery,
         current_settings=current_settings,
     )
-    
+
     # Delete record
     await db.delete(gallery)
     await db.commit()
     await clear_failed_gallery(gid)
     await realtime_hub.clear_gallery(gid)
-    
+
     return {
         "status": "Deleted with files",
         "gid": gid,
@@ -249,6 +252,7 @@ async def delete_gallery_with_files(gid: int, db: AsyncSession = Depends(get_db)
     }
 
 @router.delete("/galleries")
+@downloader.serialize_queue_mutation
 async def delete_all_galleries(confirm: bool = False, db: AsyncSession = Depends(get_db)):
     """Delete all galleries from the database. Requires confirm=true."""
     if not confirm:
@@ -267,6 +271,7 @@ async def delete_all_galleries(confirm: bool = False, db: AsyncSession = Depends
     return {"status": "All galleries deleted"}
 
 @router.post("/galleries/{gid}/reset")
+@downloader.serialize_queue_mutation
 async def reset_gallery(gid: int, db: AsyncSession = Depends(get_db)):
     """Reset a gallery status to pending for re-download."""
     from app.db.models import DownloadStatus
@@ -304,6 +309,8 @@ async def trigger_reset_sync_state():
     """
     Reset incremental sync cursors and failed retry queue.
     """
+    if updater.sync_running:
+        raise HTTPException(status_code=409, detail="请等待当前同步完成后再重置同步状态")
     await reset_sync_state()
     return {"status": "Sync state reset"}
 
@@ -362,7 +369,7 @@ async def get_settings():
 
 @router.post("/settings")
 async def update_settings(data: SettingsUpdate):
-    updates = {field: getattr(data, field) for field in data.__fields_set__}
+    updates = data.model_dump(exclude_unset=True)
     from loguru import logger
     logger.info(f"Settings update received: {list(updates.keys())}")
     try:
@@ -404,7 +411,7 @@ async def refresh_igneous():
         new_igneous = await cookie_manager.refresh_igneous(force=True)
         if not new_igneous:
             raise HTTPException(status_code=400, detail="刷新失败，请检查 ipb_member_id 和 ipb_pass_hash 是否正确")
-        return {"status": "ok", "igneous": new_igneous}
+        return {"status": "ok", "igneous_configured": True}
     except HTTPException:
         raise
     except CookieRefreshError as exc:

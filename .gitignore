@@ -53,4 +53,6 @@ dev/
 # --- Desktop build artifacts ---
 dist/
 build/
+frontend/test-results/
+frontend/playwright-report/
 *.spec.bak

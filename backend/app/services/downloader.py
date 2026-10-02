@@ -1082,12 +1082,10 @@ class DownloaderService:
                             downloaded_at=completed_at,
                         ),
                     )
+                    cache.publish(final_file)
                     if output_template_settings.conflict_strategy == "overwrite":
-                        for conflict_path in (final_file, partial_file, with_temp_suffix(final_file)):
-                            if conflict_path.exists():
-                                conflict_path.unlink()
-                    shutil.move(str(temp_file), str(final_file))
-                    cache.forget()
+                        for conflict_path in (partial_file, with_temp_suffix(final_file)):
+                            self._cleanup_archive_temp_file(conflict_path)
                     gallery._result_status = DownloadStatus.COMPLETED.value
                     gallery._result_detail = "下载完成"
                     gallery._result_downloaded_at = completed_at

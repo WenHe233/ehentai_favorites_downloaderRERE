@@ -93,7 +93,6 @@ async def test_long_title_failed_record_retries_with_new_settings(monkeypatch):
 async def test_verified_archive_reused_after_destination_error(monkeypatch):
     from app.services.downloader import downloader
     from app.core.archiver import GalleryArchiver
-    import app.services.downloader as module
     gallery = Gallery(gid=101, token="sample", title="long." + "中" * 200)
     root = settings.DATA_DIR / "archive_temp"
     root.mkdir(parents=True)
@@ -103,11 +102,11 @@ async def test_verified_archive_reused_after_destination_error(monkeypatch):
     cache.mark_complete()
     prepare = AsyncMock(side_effect=AssertionError("paid request must not be repeated"))
     monkeypatch.setattr(GalleryArchiver, "prepare_and_poll", prepare)
-    real_move = module.shutil.move
-    monkeypatch.setattr(module.shutil, "move", lambda *args: (_ for _ in ()).throw(PermissionError("locked")))
+    real_publish = ArchiveCache.publish
+    monkeypatch.setattr(ArchiveCache, "publish", lambda *args: (_ for _ in ()).throw(PermissionError("locked")))
     assert not await downloader._download_gallery(gallery, "archive")
     assert cache.valid()
-    monkeypatch.setattr(module.shutil, "move", real_move)
+    monkeypatch.setattr(ArchiveCache, "publish", real_publish)
     settings.update_runtime_settings({"filename_max_length": 80, "output_template": "./downloads/{gid}-{title}.zip"})
     assert await downloader._download_gallery(gallery, "archive")
     prepare.assert_not_awaited()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, time, timedelta, timezone
 from math import ceil
 from pathlib import Path
@@ -59,6 +59,7 @@ class NotificationEvent:
     monitored_favcats: Optional[list[int]] = None
     total_processed: Optional[int] = None
     restored_failed: Optional[int] = None
+    pending_recipients: Optional[list[int]] = None
 
 
 @dataclass
@@ -245,6 +246,7 @@ class NotificationService:
             "monitored_favcats": list(event.monitored_favcats or []),
             "total_processed": event.total_processed,
             "restored_failed": event.restored_failed,
+            "pending_recipients": event.pending_recipients,
         }
 
     @classmethod
@@ -277,6 +279,7 @@ class NotificationService:
             monitored_favcats=monitored_favcats,
             total_processed=raw.get("total_processed"),
             restored_failed=raw.get("restored_failed"),
+            pending_recipients=raw.get("pending_recipients") if isinstance(raw.get("pending_recipients"), list) else None,
         )
 
     async def _read_buffer_state_with_session(
@@ -693,56 +696,45 @@ class NotificationService:
                 return
             pending = list(state.events)
 
-        try:
-            if len(pending) == 1:
-                failed_recipients = await self._send_message(
-                    self._format_single_message(pending[0], active_runtime),
-                    active_runtime,
-                )
-            else:
-                failed_recipients = await self._send_message(
-                    self._format_digest_message(pending, active_runtime),
-                    active_runtime,
-                )
-        except Exception as exc:
-            logger.warning(f"Failed to flush Telegram notifications, will retry later: {exc}")
-            retry_at = datetime.now(timezone.utc) + timedelta(seconds=NOTIFICATION_RETRY_DELAY_SECONDS)
-            async with self._buffer_lock:
-                latest_state = await self._read_buffer_state()
-                if latest_state.events:
-                    latest_state.flush_after = retry_at
-                    latest_state.flush_reason = BUFFER_REASON_BATCH
-                    await self._write_buffer_state(latest_state)
-            await self._schedule_flush_at(retry_at)
-            return
+        groups: dict[tuple[int, ...], list[NotificationEvent]] = {}
+        for event in pending:
+            recipients = active_runtime.recipients if event.pending_recipients is None else [
+                recipient for recipient in event.pending_recipients if recipient in active_runtime.recipients
+            ]
+            groups.setdefault(tuple(recipients), []).append(event)
+        outcomes: dict[str, list[int]] = {}
+        for recipients, events in groups.items():
+            failed_recipients = []
+            if recipients:
+                delivery_runtime = replace(active_runtime, recipients=list(recipients))
+                try:
+                    text = self._format_single_message(events[0], delivery_runtime) if len(events) == 1 else self._format_digest_message(events, delivery_runtime)
+                    failed_recipients = await self._send_message(text, delivery_runtime)
+                except Exception as exc:
+                    logger.warning(f"Failed to flush Telegram notifications, will retry later: {exc}")
+                    failed_recipients = list(recipients)
+            outcomes.update({event.event_id: failed_recipients for event in events})
 
-        if failed_recipients:
-            logger.warning(
-                "Telegram notifications were not delivered to all recipients; "
-                f"will retry for recipients: {failed_recipients}"
-            )
-            retry_at = datetime.now(timezone.utc) + timedelta(seconds=NOTIFICATION_RETRY_DELAY_SECONDS)
-            async with self._buffer_lock:
-                latest_state = await self._read_buffer_state()
-                if latest_state.events:
-                    latest_state.flush_after = retry_at
-                    latest_state.flush_reason = BUFFER_REASON_BATCH
-                    await self._write_buffer_state(latest_state)
-            await self._schedule_flush_at(retry_at)
-            return
-
-        sent_ids = {event.event_id for event in pending}
+        retry_at = datetime.now(timezone.utc) + timedelta(seconds=NOTIFICATION_RETRY_DELAY_SECONDS)
         async with self._buffer_lock:
             latest_state = await self._read_buffer_state()
-            remaining = [event for event in latest_state.events if event.event_id not in sent_ids]
+            remaining = []
+            for event in latest_state.events:
+                if event.event_id in outcomes:
+                    event.pending_recipients = outcomes[event.event_id]
+                    if not event.pending_recipients:
+                        continue
+                remaining.append(event)
             latest_state.events = remaining
-            if not remaining:
+            if remaining:
+                latest_state.flush_after = retry_at
+                latest_state.flush_reason = BUFFER_REASON_BATCH
+            else:
                 latest_state.flush_after = None
                 latest_state.flush_reason = None
             await self._write_buffer_state(latest_state)
-
         if remaining:
-            await self.refresh_schedule(runtime=active_runtime)
+            await self._schedule_flush_at(retry_at)
 
     async def _dispatch_event(
         self,
@@ -786,8 +778,13 @@ class NotificationService:
             await self._schedule_flush_at(flush_after or now)
             return
 
-        failed_recipients = await self._send_message(self._format_single_message(event, runtime), runtime)
+        try:
+            failed_recipients = await self._send_message(self._format_single_message(event, runtime), runtime)
+        except Exception as exc:
+            logger.warning(f"Failed to send Telegram notification, will retry later: {exc}")
+            failed_recipients = list(runtime.recipients)
         if failed_recipients:
+            event.pending_recipients = failed_recipients
             retry_at = datetime.now(timezone.utc) + timedelta(seconds=NOTIFICATION_RETRY_DELAY_SECONDS)
             async with self._buffer_lock:
                 state = await self._read_buffer_state()

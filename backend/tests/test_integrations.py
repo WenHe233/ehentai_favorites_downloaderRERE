@@ -66,6 +66,40 @@ async def test_native_packaging_failure_preserves_previous_archive_and_images(tm
         assert archive.testzip() is None
 
 
+def test_cross_volume_archive_copy_failure_preserves_cache_and_destination(tmp_path, monkeypatch):
+    import errno
+    import zipfile
+    from app.core.archive_cache import ArchiveCache
+    import app.core.archive_cache as module
+    cache = ArchiveCache(tmp_path / 'source.download', 1, 'sample', 'original')
+    with zipfile.ZipFile(cache.path, 'w') as archive:
+        archive.writestr('001.txt', 'sample')
+    cache.mark_complete()
+    destination = tmp_path / 'existing.zip'
+    destination.write_bytes(b'previous archive')
+    real_replace = module.os.replace
+    def replace(source, target):
+        if source == cache.path:
+            raise OSError(errno.EXDEV, 'cross-device')
+        return real_replace(source, target)
+    monkeypatch.setattr(module.os, 'replace', replace)
+    copy = module.shutil.copyfile
+    def disk_full(source, target):
+        target.write_bytes(b'incomplete')
+        raise OSError(errno.ENOSPC, 'disk full')
+    monkeypatch.setattr(module.shutil, 'copyfile', disk_full)
+    with pytest.raises(OSError):
+        cache.publish(destination)
+    assert cache.valid()
+    assert destination.read_bytes() == b'previous archive'
+    assert not destination.with_name('existing.zip.tmpdownload').exists()
+    monkeypatch.setattr(module.shutil, 'copyfile', copy)
+    cache.publish(destination)
+    with zipfile.ZipFile(destination) as archive:
+        assert archive.read('001.txt') == b'sample'
+    assert not cache.path.exists()
+
+
 async def test_cancel_before_task_starts_does_not_leave_reserved_slot():
     from app.services.downloader import downloader
     task=asyncio.create_task(asyncio.sleep(100))
@@ -86,6 +120,50 @@ async def test_startup_restores_interrupted_native_task():
     async with SessionLocal() as db:assert (await db.get(Gallery,(1,'sample'))).status=='pending'
 
 
+async def test_stored_native_failure_retries_new_path_without_refetching_images(monkeypatch):
+    from app.core.native_crawler import NativeCrawler, ImageDownloadResult
+    from app.core.client import eh_client
+    from app.services.downloader import downloader
+    from app.main import app
+    from pathlib import Path
+    settings.update_runtime_settings({'download_mode':'native_crawl','conflict_strategy':'overwrite'})
+    gallery = Gallery(gid=77,token='sample',title='長い.标题' * 70,status='pending',filecount=1)
+    async with SessionLocal() as db:
+        db.add(gallery)
+        await db.commit()
+    monkeypatch.setattr(eh_client, 'get_html', AsyncMock(return_value='<div id="gdt"><a href="https://e-hentai.org/s/a/77-1">1</a></div>'))
+    async def image_download(url, directory, index, **kwargs):
+        path = directory / '0001.png'
+        Image.new('RGB',(2,2),'red').save(path)
+        return ImageDownloadResult(path,quality='native')
+    fetch = AsyncMock(side_effect=image_download)
+    monkeypatch.setattr(NativeCrawler, '_download_page_image', fetch)
+    package = NativeCrawler._write_zip
+    monkeypatch.setattr(NativeCrawler, '_write_zip', AsyncMock(side_effect=PermissionError('output locked')))
+    await downloader._process_queue_concurrent()
+    await asyncio.gather(*list(downloader._active_downloads.values()))
+    async with SessionLocal() as db:
+        assert (await db.get(Gallery,(77,'sample'))).status == 'failed'
+    assert NativeCrawler.describe_resume_artifacts(77)['downloaded_files'] == 1
+    settings.update_runtime_settings({'filename_max_length':80,'output_template':'./retry/{gid}-{title}-{quality}.zip'})
+    monkeypatch.setattr(NativeCrawler, '_write_zip', package)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+        assert (await client.post('/api/v1/galleries/77/reset')).status_code == 200
+    await downloader._process_queue_concurrent()
+    await asyncio.gather(*list(downloader._active_downloads.values()))
+    async with SessionLocal() as db:
+        result = await db.get(Gallery,(77,'sample'))
+        assert result.status == 'completed'
+        assert result.error_msg is None
+        assert result.title == gallery.title
+        assert result.resolved_quality == 'native'
+        assert Path(result.download_path).parent.name == 'retry'
+        assert len(Path(result.download_path).name) <= 80
+        assert result.download_mode == 'native_crawl'
+        assert 'output locked' in str(result.download_logs)
+    fetch.assert_awaited_once()
+
+
 async def test_telegram_buffer_survives_restart_without_real_messages(monkeypatch):
     from app.services.notification_service import NotificationService, NotificationEvent
     service=NotificationService();runtime=await service._get_runtime_settings()
@@ -95,6 +173,23 @@ async def test_telegram_buffer_survives_restart_without_real_messages(monkeypatc
     restored=NotificationService();send=AsyncMock(return_value=[]);monkeypatch.setattr(restored,'_send_message',send)
     await restored._flush_pending(runtime)
     send.assert_awaited_once();assert not (await restored._read_buffer_state()).events
+
+
+async def test_telegram_retry_only_targets_failed_recipients_after_restart(monkeypatch):
+    from app.services.notification_service import NotificationService, NotificationEvent
+    service = NotificationService()
+    runtime = replace(await service._get_runtime_settings(), enabled=True, token='test', recipients=[1,2], batch_window_seconds=0)
+    event = NotificationEvent(event_id='sample', kind='download_completed', created_at=datetime.now(timezone.utc), gid=1, title='test')
+    send = AsyncMock(return_value=[2])
+    monkeypatch.setattr(service, '_send_message', send)
+    await service._dispatch_event(event, runtime=runtime)
+    await service._cancel_flush_task()
+    restored = NotificationService()
+    retry = AsyncMock(return_value=[])
+    monkeypatch.setattr(restored, '_send_message', retry)
+    await restored._flush_pending(runtime)
+    assert retry.await_args.args[1].recipients == [2]
+    assert not (await restored._read_buffer_state()).events
 
 
 async def test_free_and_paid_archive_budget_is_cumulative(tmp_path):

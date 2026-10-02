@@ -23,6 +23,13 @@
 
 ## 快速开始
 
+### Windows 桌面版
+
+从 Gitea Release 下载 `EFDRR-版本号-windows-x64.zip`，完整解压后运行 `EFDRR.exe`。
+需要 Windows 10/11 x64 和 Microsoft Edge WebView2 Runtime，无需安装 Python 或 Node.js。
+首次启动显示管理员登录信息，配置、数据库和默认下载目录位于程序旁。
+关闭窗口时可选择退出或进入托盘；升级前退出程序并保留 `config.yaml`、`data/` 和 `downloads/`。
+
 ### 方式一：本地开发运行
 
 后端：
@@ -103,3 +110,51 @@ docker compose up -d --build
 
 - 在反向代理部署下，不需要额外暴露后端端口给浏览器
 - 在本地开发或跨域调试时，仍然可以手动指定后端地址
+
+
+## 版本与发布
+
+根目录 VERSION 是唯一手工维护的应用版本来源。
+
+```bash
+python scripts/version.py check
+python scripts/version.py patch
+```
+
+开发分支与 PR 在 Gitea 的 ubuntu-latest Runner 上运行后端、前端和浏览器测试，并生成 Windows 候选包。
+VERSION 合入 master 后自动生成同名 v 标签和正式 Release。附件上传完整后才公开发布；失败的上传保留为草稿，允许重跑。
+使用 Gitea 内置 GITEA_TOKEN，无需在仓库中保存个人令牌。
+
+Ubuntu 构建工具需要 Python 3.13、Node.js 24、uv 0.12.10、MinGW-w64、setuptools 和 wheel。
+
+```bash
+python desktop/build.py
+python scripts/validate_package.py dist/EFDRR-1.0.0-windows-x64.zip
+```
+
+## 验证与开发
+
+```bash
+python -m pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+python -m pytest -q
+cd frontend
+npm ci
+npm run lint
+npm test
+npm run build
+npx playwright install chromium
+npm run test:e2e
+```
+
+后端 requirements.in 记录直接依赖，requirements.txt 锁定完整依赖与哈希。
+桌面依赖由 desktop/requirements.in 生成 desktop/requirements-windows.lock，按 Windows x64 和 Python 3.13 解析。
+更新依赖后应重新运行测试并生成两个锁文件：
+
+```bash
+uv pip compile backend/requirements.in --python-version 3.13 --universal --generate-hashes -o backend/requirements.txt
+uv pip compile desktop/requirements.in --python-version 3.13 --python-platform x86_64-pc-windows-msvc --generate-hashes -o desktop/requirements-windows.lock
+```
+
+真实账号联调脚本为 scripts/live_acceptance.py，必须显式指定测试样本，读取本机 .env 的 Cookie。
+脚本使用独立数据目录，并在归档提交前校验报价；累计 GP 上限为 10,000，未知报价或 Credits 请求会被拒绝。
+.env、实际配置、测试下载及日志不进入 Git、Docker 构建上下文或发布包。

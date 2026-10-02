@@ -6,6 +6,8 @@ from typing import Any, Dict, Optional, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy import func, update
+from sqlalchemy.dialects.sqlite import insert
 
 from app.db.database import SessionLocal
 from app.db.models import AppConfig, Gallery, DownloadMode, DownloadStatus
@@ -57,6 +59,7 @@ def normalize_sync_state(raw: Any) -> Dict[str, Any]:
                 "title": info.get("title") or f"Gallery {gid}",
                 "favorited": info.get("favorited"),
                 "parent_gid": info.get("parent_gid"),
+                "favcat": info.get("favcat"),
                 "download_mode": info.get("download_mode") or DownloadMode.ARCHIVE,
             }
 
@@ -120,68 +123,49 @@ async def reset_sync_state() -> Dict[str, Any]:
     return await write_sync_state(deepcopy(DEFAULT_SYNC_STATE))
 
 
-async def clear_failed_gallery(
-    gid: int,
-    session: Optional[AsyncSession] = None,
-) -> None:
-    gid_key = str(gid)
+async def write_sync_progress(state: Dict[str, Any]) -> None:
+    """Update cursors without overwriting concurrent download retry changes."""
+    async with SessionLocal() as session:
+        statement = insert(AppConfig).values(key=SYNC_STATE_KEY, value=json.dumps(normalize_sync_state(state)))
+        statement = statement.on_conflict_do_update(index_elements=[AppConfig.key], set_={
+            "value": func.json_set(AppConfig.value, "$.last_favorited", func.json(json.dumps(state["last_favorited"])), "$.last_run_ts", state.get("last_run_ts"))
+        })
+        await session.execute(statement)
+        await session.commit()
 
+
+async def _mutate_retry(statement, session=None):
     if session is not None:
-        state = await _read_sync_state_with_session(session)
-        if gid_key in state["failed"]:
-            del state["failed"][gid_key]
-            await _write_sync_state_with_session(session, state)
+        await session.execute(statement)
         return
+    async with SessionLocal() as owned:
+        await owned.execute(statement)
+        await owned.commit()
 
-    async with _SYNC_STATE_WRITE_LOCK:
-        async with SessionLocal() as locked_session:
-            async with locked_session.begin():
-                state = await _read_sync_state_with_session(locked_session)
-                if gid_key in state["failed"]:
-                    del state["failed"][gid_key]
-                    await _write_sync_state_with_session(locked_session, state)
+
+async def clear_failed_gallery(gid: int, session: Optional[AsyncSession] = None) -> None:
+    await _mutate_retry(update(AppConfig).where(AppConfig.key == SYNC_STATE_KEY).values(
+        value=func.json_remove(AppConfig.value, f'$.failed."{int(gid)}"')), session)
 
 
 async def clear_all_failed_galleries() -> None:
-    async with _SYNC_STATE_WRITE_LOCK:
-        async with SessionLocal() as session:
-            async with session.begin():
-                state = await _read_sync_state_with_session(session)
-                if state["failed"]:
-                    state["failed"] = {}
-                    await _write_sync_state_with_session(session, state)
+    await _mutate_retry(update(AppConfig).where(AppConfig.key == SYNC_STATE_KEY).values(
+        value=func.json_set(AppConfig.value, "$.failed", func.json("{}"))))
 
 
-async def upsert_failed_gallery(
-    gallery: Gallery,
-    session: Optional[AsyncSession] = None,
-) -> None:
-    if session is not None:
-        state = await _read_sync_state_with_session(session)
-        state["failed"][str(gallery.gid)] = {
-            "token": gallery.token or "",
-            "title": gallery.title or f"Gallery {gallery.gid}",
-            "favorited": format_sync_timestamp(gallery.favorited_at),
-            "parent_gid": gallery.parent_gid,
-            "favcat": gallery.favcat,
-            "download_mode": gallery.download_mode or DownloadMode.ARCHIVE,
-        }
-        await _write_sync_state_with_session(session, state)
-        return
-
-    async with _SYNC_STATE_WRITE_LOCK:
-        async with SessionLocal() as locked_session:
-            async with locked_session.begin():
-                state = await _read_sync_state_with_session(locked_session)
-                state["failed"][str(gallery.gid)] = {
-                    "token": gallery.token or "",
-                    "title": gallery.title or f"Gallery {gallery.gid}",
-                    "favorited": format_sync_timestamp(gallery.favorited_at),
-                    "parent_gid": gallery.parent_gid,
-                    "favcat": gallery.favcat,
-                    "download_mode": gallery.download_mode or DownloadMode.ARCHIVE,
-                }
-                await _write_sync_state_with_session(locked_session, state)
+async def upsert_failed_gallery(gallery: Gallery, session: Optional[AsyncSession] = None) -> None:
+    entry = {
+        "token": gallery.token or "", "title": gallery.title or f"Gallery {gallery.gid}",
+        "favorited": format_sync_timestamp(gallery.favorited_at), "parent_gid": gallery.parent_gid,
+        "favcat": gallery.favcat, "download_mode": gallery.download_mode or DownloadMode.ARCHIVE,
+    }
+    initial = deepcopy(DEFAULT_SYNC_STATE)
+    initial["failed"][str(gallery.gid)] = entry
+    statement = insert(AppConfig).values(key=SYNC_STATE_KEY, value=json.dumps(initial))
+    statement = statement.on_conflict_do_update(index_elements=[AppConfig.key], set_={
+        "value": func.json_set(AppConfig.value, f'$.failed."{int(gallery.gid)}"', func.json(json.dumps(entry)))
+    })
+    await _mutate_retry(statement, session)
 
 
 async def restore_failed_galleries(
@@ -240,6 +224,10 @@ async def restore_failed_galleries(
     if stale_gids:
         for gid_key in stale_gids:
             current_state["failed"].pop(gid_key, None)
-        await write_sync_state(current_state)
+        for gid_key in stale_gids:
+            try:
+                await clear_failed_gallery(int(gid_key))
+            except ValueError:
+                pass
 
-    return current_state, restored
+    return await read_sync_state(), restored

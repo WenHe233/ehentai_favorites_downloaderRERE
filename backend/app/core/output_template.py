@@ -206,7 +206,7 @@ def build_output_context(
 
 
 def with_partial_suffix(path: Path) -> Path:
-    suffix = "".join(path.suffixes)
+    suffix = path.suffix
     name = path.name
     if suffix:
         stem = name[: -len(suffix)]
@@ -217,7 +217,7 @@ def with_partial_suffix(path: Path) -> Path:
 
 
 def with_temp_suffix(path: Path, marker: str = ".tmpdownload") -> Path:
-    suffix = "".join(path.suffixes)
+    suffix = path.suffix
     name = path.name
     if suffix:
         stem = name[: -len(suffix)]
@@ -231,7 +231,7 @@ def ensure_unique_path(path: Path) -> Path:
     if not path.exists():
         return path
 
-    suffix = "".join(path.suffixes)
+    suffix = path.suffix
     name = path.name
     stem = name[: -len(suffix)] if suffix else name
     counter = 1
@@ -247,7 +247,7 @@ def _ensure_unique_pair(final_path: Path, partial_path: Path) -> tuple[Path, Pat
     if not final_path.exists() and not partial_path.exists():
         return final_path, partial_path
 
-    suffix = "".join(final_path.suffixes)
+    suffix = final_path.suffix
     name = final_path.name
     stem = name[: -len(suffix)] if suffix else name
     counter = 1
@@ -346,7 +346,7 @@ def _resolve_rendered_path(
         raw_parts = normalized_rendered.split("/")
 
     for index, part in enumerate(raw_parts):
-        if part == "." and index == 0:
+        if not part or part == ".":
             continue
         if part == "..":
             raise OutputTemplateError("输出路径模板不允许使用 .. 向上跳目录")
@@ -356,8 +356,18 @@ def _resolve_rendered_path(
         sanitized_parts.append("未知")
 
     root = Path(anchor) if anchor else base_dir
-    resolved = root.joinpath(*sanitized_parts)
-    resolved = resolved.with_name(_truncate_filename_if_needed(resolved.name, truncate_enabled, max_length))
+    resolved = root.joinpath(*sanitized_parts).absolute()
+    # Reserve space for .partial, .tmpdownload and collision numbering.
+    reserve = 32
+    for segment in resolved.parent.parts[1:]:
+        if _filesystem_length(segment) > 255:
+            raise OutputTemplateError("输出目录名过长，请缩短目录或输出路径模板")
+    component_budget = 255 - reserve
+    if os.name == "nt":
+        component_budget = min(component_budget, 259 - _filesystem_length(str(resolved.parent)) - 1 - reserve)
+    if component_budget < 16:
+        raise OutputTemplateError("输出目录路径过长，请选择更短的下载目录")
+    resolved = resolved.with_name(_truncate_filename_if_needed(resolved.name, truncate_enabled, max_length, component_budget))
     if partial:
         resolved = with_partial_suffix(resolved)
     resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -368,18 +378,35 @@ def _resolve_rendered_path(
     return resolved
 
 
-def _truncate_filename_if_needed(name: str, truncate_enabled: bool, max_length: int) -> str:
+def _filesystem_length(value: str) -> int:
+    return len(value.encode("utf-16-le")) // 2 if os.name == "nt" else len(value.encode("utf-8"))
+
+
+def _truncate_filename_if_needed(name: str, truncate_enabled: bool, max_length: int, filesystem_budget: int = 223) -> str:
     if not name:
         name = "未知"
 
-    suffix = "".join(Path(name).suffixes)
+    name = _sanitize_path_segment(name, is_filename=True)
+    suffix = Path(name).suffix
+    # A dot in a gallery title is not the beginning of a compound extension.
+    if len(suffix) > 16:
+        suffix = ""
     stem = name[: -len(suffix)] if suffix else name
-    if not truncate_enabled or len(name) <= max_length:
-        return _sanitize_path_segment(name, is_filename=True)
-
+    if not truncate_enabled:
+        if _filesystem_length(name) > filesystem_budget:
+            raise OutputTemplateError("文件名过长，请启用文件名截断或缩短输出路径模板后重试")
+        return name
     remaining = max(1, max_length - len(suffix))
-    truncated = f"{stem[:remaining]}{suffix}"
-    return _sanitize_path_segment(truncated, is_filename=True)
+    stem = stem[:remaining]
+    while stem and _filesystem_length(stem + suffix) > filesystem_budget:
+        stem = stem[:-1]
+    if not stem:
+        raise OutputTemplateError("输出文件名没有足够空间，请缩短输出目录")
+    result = _sanitize_path_segment(stem + suffix, is_filename=True)
+    # Sanitizing a reserved Windows name may insert one extra character.
+    if len(result) > max_length or _filesystem_length(result) > filesystem_budget:
+        return _truncate_filename_if_needed("_" + stem[:-2] + suffix, True, max_length, filesystem_budget)
+    return result
 
 
 def _sanitize_placeholder_value(value: str) -> str:
@@ -398,7 +425,7 @@ def _sanitize_path_segment(segment: str, *, is_filename: bool = False) -> str:
     if os.name == "nt":
         root_name = normalized.split(".")[0].upper()
         if root_name in WINDOWS_RESERVED_NAMES:
-            normalized = f"{normalized}_"
+            normalized = f"_{normalized}"
 
     if is_filename and normalized in {".", ".."}:
         normalized = "未知"

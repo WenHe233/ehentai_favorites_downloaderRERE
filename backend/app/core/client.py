@@ -6,6 +6,7 @@ from app.core.config import settings
 from typing import Optional, Dict, Any
 import time
 import json
+from app.core.http_cookies import site_cookies
 
 class RateLimiter:
     def __init__(self, interval: float):
@@ -69,6 +70,8 @@ class EHClient:
         self._client: Optional[httpx.AsyncClient] = None
         self.limiter = RateLimiter(interval=settings.REQUEST_DELAY)
         self._refresh_lock = asyncio.Lock()
+        self._client_lock = asyncio.Lock()
+        self._leases = {}
 
     def _get_headers(self):
         return {
@@ -85,7 +88,7 @@ class EHClient:
             proxy_url = await _get_proxy_url()
             logger.debug(f"Using cookies: {list(cookies.keys())}")
             self._client = httpx.AsyncClient(
-                cookies=cookies,
+                cookies=site_cookies(cookies),
                 headers=self._get_headers(),
                 proxy=proxy_url,
                 timeout=30.0,
@@ -94,9 +97,25 @@ class EHClient:
         return self._client
 
     async def close(self):
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()
+        async with self._client_lock:
+            client = self._client
             self._client = None
+            if client and not self._leases.get(client) and not client.is_closed:
+                await client.aclose()
+
+    async def _request(self, method, url, **kwargs):
+        async with self._client_lock:
+            client = await self._ensure_client()
+            self._leases[client] = self._leases.get(client, 0) + 1
+        try:
+            return await client.request(method, url, **kwargs)
+        finally:
+            async with self._client_lock:
+                self._leases[client] -= 1
+                if not self._leases[client]:
+                    self._leases.pop(client)
+                    if client is not self._client:
+                        await client.aclose()
 
     def _is_session_expired(self, response: httpx.Response) -> bool:
         """Check if the response indicates an expired/invalid session."""
@@ -138,12 +157,11 @@ class EHClient:
         """
         await self.limiter.acquire()
         logger.info(f"Fetching: {url}")
-        
-        client = await self._ensure_client()
+
         try:
-            response = await client.get(url, params=params)
+            response = await self._request("GET", url, params=params)
             response.raise_for_status()
-            
+
             # Basic anti-ban check
             if "banned" in response.text.lower() and "your ip" in response.text.lower():
                 logger.critical("Response contains 'banned'! Stopping requests.")
@@ -170,10 +188,9 @@ class EHClient:
         """
         url = "https://api.e-hentai.org/api.php"
         await self.limiter.acquire()
-        
-        client = await self._ensure_client()
+
         logger.debug(f"API Call: {payload}")
-        response = await client.post(url, json=payload)
+        response = await self._request("POST", url, json=payload)
         response.raise_for_status()
         return response.json()
 
@@ -187,9 +204,8 @@ class EHClient:
         """
         await self.limiter.acquire()
         logger.info(f"Posting to: {url}")
-        
-        client = await self._ensure_client()
-        response = await client.post(url, data=data)
+
+        response = await self._request("POST", url, data=data)
         response.raise_for_status()
         return response.text
 
@@ -200,26 +216,26 @@ class EHClient:
         try:
             html = await self.get_html("https://e-hentai.org/exchange.php?t=gp")
             import re
-            
+
             # Correct patterns based on actual page structure:
             # "Available: 17,805 kGP" (kGP = thousands of GP)
             # "Available: 49,753,416 Credits"
-            
+
             gp_match = re.search(r'Available:\s*([\d,]+)\s*kGP', html, re.IGNORECASE)
             credits_match = re.search(r'Available:\s*([\d,]+)\s*Credits', html, re.IGNORECASE)
-            
+
             gp_value = None
             credits_value = None
-            
+
             if gp_match:
                 # kGP means thousands of GP, multiply by 1000
                 gp_value = int(gp_match.group(1).replace(",", "")) * 1000
-                
+
             if credits_match:
                 credits_value = int(credits_match.group(1).replace(",", ""))
-            
+
             logger.debug(f"Account info parsed - GP: {gp_value}, Credits: {credits_value}")
-            
+
             return {
                 "gp": gp_value,
                 "credits": credits_value

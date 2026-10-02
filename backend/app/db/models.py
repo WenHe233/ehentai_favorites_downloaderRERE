@@ -22,7 +22,7 @@ class Gallery(Base):
 
     gid = Column(Integer, primary_key=True, index=True)
     token = Column(String, primary_key=True) # Composite key just in case, or just index
-    
+
     title = Column(String, index=True)
     title_jpn = Column(String, nullable=True)
     category = Column(String, index=True)
@@ -31,7 +31,7 @@ class Gallery(Base):
     filecount = Column(Integer)
     rating = Column(Float)
     tags = Column(JSON) # List of tags
-    
+
     # Download Info
     status = Column(String, default=DownloadStatus.PENDING)
     download_mode = Column(String, default=DownloadMode.ARCHIVE)
@@ -47,11 +47,11 @@ class Gallery(Base):
     parent_gid = Column(String, nullable=True)
     replaced_by = Column(String, nullable=True) # "newer version" URL or GID
     last_checked = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    
+
     # Error tracking
     error_msg = Column(Text, nullable=True)
     retry_count = Column(Integer, default=0)
-    
+
     # Download logs (JSON array of log entries)
     download_logs = Column(Text, nullable=True)  # JSON serialized log entries
 
@@ -60,7 +60,7 @@ class Gallery(Base):
 
 class User(Base):
     __tablename__ = "users"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
     hashed_password = Column(String)
@@ -73,7 +73,7 @@ class AppConfig(Base):
     User-editable configuration now lives in config.yaml.
     """
     __tablename__ = "app_config"
-    
+
     key = Column(String, primary_key=True)
     value = Column(String) # JSON serialized value
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

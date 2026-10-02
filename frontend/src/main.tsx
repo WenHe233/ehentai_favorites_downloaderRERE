@@ -1,15 +1,18 @@
-import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
-import './index.css'
-import App from './App.tsx'
-import { ThemeProvider, bootstrapTheme } from './lib/theme.tsx'
-
-bootstrapTheme()
-
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
+import React from "react";
+import ReactDOM from "react-dom/client";
+import { Toaster } from "sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { ThemeProvider, bootstrapTheme } from "@/lib/theme";
+import App from "./App";
+import "./index.css";
+bootstrapTheme();
+ReactDOM.createRoot(document.getElementById("root")!).render(
+  <React.StrictMode>
     <ThemeProvider>
-      <App />
+      <TooltipProvider>
+        <App />
+        <Toaster richColors position="bottom-right" />
+      </TooltipProvider>
     </ThemeProvider>
-  </StrictMode>,
-)
+  </React.StrictMode>,
+);

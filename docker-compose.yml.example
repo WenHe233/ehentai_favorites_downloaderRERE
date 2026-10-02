@@ -1,20 +1,20 @@
 services:
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     restart: unless-stopped
+    environment:
+      EFDRR_DATA_ROOT: /app/userdata
     volumes:
-      - ./backend/config.yaml:/app/config.yaml
-      - ./backend/data:/app/data
-      - ./backend/downloads:/app/downloads
+      - ./backend:/app/userdata
     networks:
       - efdrr
 
   frontend:
     build:
-      context: ./frontend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: frontend/Dockerfile
       args:
         VITE_API_BASE_URL: /api/v1
     restart: unless-stopped

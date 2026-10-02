@@ -1,4 +1,5 @@
 import asyncio
+from functools import wraps
 import os
 import shutil
 import time
@@ -11,6 +12,7 @@ from typing import Dict, Optional, Set, List
 from app.db.database import SessionLocal
 from app.db.models import Gallery, DownloadStatus, DownloadMode
 from app.core.archiver import GalleryArchiver
+from app.core.archive_cache import ArchiveCache
 from app.core.config import settings
 from app.core.output_template import (
     OutputTemplateSettings,
@@ -26,6 +28,7 @@ from app.services.sync_state import clear_failed_gallery, upsert_failed_gallery
 class DownloaderService:
     def __init__(self):
         self.is_running = False
+        self.queue_lock = asyncio.Lock()
         # Track active downloads by gid for cancellation
         self._active_downloads: Dict[int, asyncio.Task] = {}
         self._cancelled_gids: Set[int] = set()
@@ -51,25 +54,8 @@ class DownloaderService:
             self._max_concurrent = new_max_concurrent
             self._semaphore = asyncio.Semaphore(self._max_concurrent)
             logger.info(f"Max concurrent downloads set: {self._max_concurrent}")
-        elif new_max_concurrent != self._max_concurrent:
-            old_max = self._max_concurrent
+        else:
             self._max_concurrent = new_max_concurrent
-            # Adjust semaphore capacity by releasing or acquiring the difference.
-            # This is safe because we only touch the internal counter.
-            diff = new_max_concurrent - old_max
-            if diff > 0:
-                for _ in range(diff):
-                    self._semaphore.release()
-            elif diff < 0:
-                # Reducing capacity: acquire permits so fewer are available.
-                # Use non-blocking try to avoid deadlock; if permits aren't
-                # available right now, the reduction takes effect as tasks finish.
-                for _ in range(-diff):
-                    acquired = self._semaphore._value > 0  # noqa: SLF001
-                    if acquired:
-                        # Manually decrement the internal counter
-                        self._semaphore._value -= 1  # noqa: SLF001
-            logger.info(f"Max concurrent downloads updated: {old_max} -> {new_max_concurrent}")
         return current_settings
 
     @staticmethod
@@ -91,11 +77,14 @@ class DownloaderService:
         self.is_running = True
         logger.info("Downloader Service started.")
         await self._refresh_runtime_settings()
-        
+
         while self.is_running:
-            await self._process_queue_concurrent()
+            try:
+                await self._process_queue_concurrent()
+            except Exception:
+                logger.exception("Queue iteration failed; retrying without stopping the worker")
             await asyncio.sleep(2)  # Shorter sleep for responsiveness
-            
+
     async def stop(self):
         self.is_running = False
         # Cancel all active downloads and wait for them to finish
@@ -114,7 +103,7 @@ class DownloaderService:
                 if pending:
                     logger.warning(f"{len(pending)} download task(s) did not finish within timeout")
         logger.info("Downloader Service stopped.")
-    
+
     def cancel_download(self, gid: int) -> bool:
         """Mark a gid as cancelled. Returns True if was actively downloading."""
         self._cancelled_gids.add(gid)
@@ -158,11 +147,11 @@ class DownloaderService:
                 return True
             await asyncio.sleep(0.1)
         return all(not self.is_active(gid) for gid in active_gids)
-    
+
     def is_cancelled(self, gid: int) -> bool:
         """Check if a gid has been cancelled."""
         return gid in self._cancelled_gids
-    
+
     def clear_cancelled(self, gid: int):
         """Clear cancelled flag for a gid."""
         self._cancelled_gids.discard(gid)
@@ -225,7 +214,7 @@ class DownloaderService:
             resolved_quality=resolved_quality,
             progress=resolved_progress,
         )
-    
+
     @staticmethod
     def find_gallery_files(gid: int) -> list[str]:
         """Find legacy-named gallery files under the downloads directory tree."""
@@ -302,7 +291,9 @@ class DownloaderService:
         for path in known_paths or []:
             if path:
                 files.add(path)
-        files.update(cls._collect_expected_gallery_paths(gallery, current_settings))
+        # Never recompute a deletion target from today's template: it may belong
+        # to another gallery after settings or titles have changed.
+        files.update(str(settings.DATA_DIR / "archive_temp" / f"{gid}{suffix}") for suffix in (".download", ".json"))
         deleted = 0
         for f in sorted(files):
             try:
@@ -426,35 +417,47 @@ class DownloaderService:
         except Exception as exc:
             logger.warning(f"Failed to send Telegram download notification for {gallery.gid}: {exc}")
 
+    def serialize_queue_mutation(self, handler):
+        @wraps(handler)
+        async def wrapped(*args, **kwargs):
+            async with self.queue_lock:
+                return await handler(*args, **kwargs)
+        return wrapped
+
     async def _process_queue_concurrent(self):
+        async with self.queue_lock:
+            await self._dispatch_queue()
+
+    async def _dispatch_queue(self):
         """Process downloads with concurrency support for archive mode."""
         current_settings = await self._refresh_runtime_settings()
         mode = current_settings.get("download_mode") or settings.DOWNLOAD_MODE
-        
+
         # Only archive mode supports concurrent gallery downloads
         if mode == DownloadMode.ARCHIVE or mode == "archive":
             # Check how many we can start
-            available_slots = self._max_concurrent - self._active_count
+            available_slots = self._max_concurrent - len(self._active_downloads)
             if available_slots <= 0:
                 return
-            
+
             # Get pending galleries
             async with SessionLocal() as session:
                 stmt = select(Gallery).where(
-                    Gallery.status.in_([DownloadStatus.PENDING, DownloadStatus.OUTDATED])
+                    Gallery.status.in_([DownloadStatus.PENDING, DownloadStatus.OUTDATED]),
+                    Gallery.gid.not_in(list(self._active_downloads)),
                 ).order_by(Gallery.priority.desc(), Gallery.created_at.asc()).limit(available_slots)
-                
+
                 result = await session.execute(stmt)
                 galleries = result.scalars().all()
-                
+
                 if not galleries:
                     return
-                
+
                 # Mark them as downloading
                 for g in galleries:
                     g.status = DownloadStatus.DOWNLOADING
                 await session.commit()
-                
+
                 # Start concurrent downloads; revert status on task creation failure
                 for g in galleries:
                     self.clear_cancelled(g.gid)
@@ -466,223 +469,227 @@ class DownloaderService:
                         await session.commit()
                         continue
                     self._active_downloads[g.gid] = task
+                    task.add_done_callback(lambda done, gid=g.gid: self._forget_task(gid, done))
         else:
             # Sequential mode for native_crawl
             # Only process if no active downloads (truly sequential)
             if self._active_count > 0:
                 return
             await self._process_queue()
-    
+
+    def _forget_task(self, gid, task):
+        if self._active_downloads.get(gid) is task:
+            self._active_downloads.pop(gid, None)
+
     async def _download_with_semaphore(self, gallery: Gallery, mode: str):
         """Download a gallery with semaphore control."""
-        async with self._semaphore:
-            self._active_count += 1
-            try:
-                from app.services.gallery_log import append_gallery_log
-                await self._set_progress(
-                    gallery,
-                    phase="preparing",
-                    percent=2,
-                    detail=f"准备启动下载 ({mode})",
-                )
-                await append_gallery_log(gallery.gid, gallery.token, f"开始下载 (模式: {mode})")
-                
-                success = await self._download_gallery(gallery, mode)
-                result_status = getattr(gallery, "_result_status", None) or (
-                    DownloadStatus.COMPLETED.value if success else DownloadStatus.FAILED.value
-                )
-                result_progress = getattr(gallery, "_result_progress", None)
-                result_detail = getattr(gallery, "_result_detail", None)
-                result_downloaded_at = getattr(gallery, "_result_downloaded_at", None)
-                result_requested_quality = getattr(gallery, "_requested_quality", None)
-                result_resolved_quality = getattr(gallery, "_result_quality", None)
-                
-                async with SessionLocal() as session:
-                    async with session.begin():
-                        g = await session.get(Gallery, (gallery.gid, gallery.token))
-                        if g:
-                            g.requested_quality = result_requested_quality
-                            g.resolved_quality = result_resolved_quality
-                            if result_status == DownloadStatus.COMPLETED.value:
-                                g.status = DownloadStatus.COMPLETED
-                                g.downloaded_at = result_downloaded_at or datetime.now(timezone.utc)
-                                g.download_path = getattr(gallery, "download_path", None)
-                                g.error_msg = None
-                                g.retry_count = 0
-                                await append_gallery_log(
-                                    gallery.gid,
-                                    gallery.token,
-                                    self._append_quality_summary(
-                                        "下载完成",
-                                        result_requested_quality,
-                                        result_resolved_quality,
-                                    ) or "下载完成",
-                                    "success",
-                                    session=session,
-                                )
-                                await clear_failed_gallery(g.gid, session=session)
-                            elif result_status == DownloadStatus.PARTIAL.value:
-                                g.status = DownloadStatus.PARTIAL
-                                g.download_path = getattr(gallery, "download_path", None)
-                                g.retry_count += 1
-                                g.error_msg = gallery.error_msg or g.error_msg or "部分下载完成，存在缺页"
-                                partial_detail = self._append_quality_summary(
-                                    result_detail or f"部分下载完成: {g.error_msg}",
-                                    result_requested_quality,
-                                    result_resolved_quality,
-                                )
-                                await append_gallery_log(
-                                    gallery.gid,
-                                    gallery.token,
-                                    partial_detail or f"部分下载完成: {g.error_msg}",
-                                    "warning",
-                                    session=session,
-                                )
-                                if not self.is_cancelled(g.gid):
-                                    await upsert_failed_gallery(g, session=session)
-                            elif result_status == "cancelled" or self.is_cancelled(g.gid):
-                                g.status = DownloadStatus.PENDING
-                                g.error_msg = None
-                                await append_gallery_log(
-                                    gallery.gid,
-                                    gallery.token,
-                                    "下载已取消",
-                                    "warning",
-                                    session=session,
-                                )
-                            else:
-                                g.status = DownloadStatus.FAILED
-                                g.retry_count += 1
-                                g.error_msg = gallery.error_msg or g.error_msg or "Download failed"
-                                failure_detail = self._append_quality_summary(
-                                    f"下载失败: {g.error_msg}",
-                                    result_requested_quality,
-                                    result_resolved_quality,
-                                )
-                                await append_gallery_log(
-                                    gallery.gid,
-                                    gallery.token,
-                                    failure_detail or f"下载失败: {g.error_msg}",
-                                    "error",
-                                    session=session,
-                                )
-                                if not self.is_cancelled(g.gid):
-                                    await upsert_failed_gallery(g, session=session)
-                        await session.commit()
-                        if g:
-                            if result_status == DownloadStatus.COMPLETED.value:
-                                completion_detail = self._append_quality_summary(
+        self._active_count += 1
+        try:
+            from app.services.gallery_log import append_gallery_log
+            await self._set_progress(
+                gallery,
+                phase="preparing",
+                percent=2,
+                detail=f"准备启动下载 ({mode})",
+            )
+            await append_gallery_log(gallery.gid, gallery.token, f"开始下载 (模式: {mode})")
+
+            success = await self._download_gallery(gallery, mode)
+            result_status = getattr(gallery, "_result_status", None) or (
+                DownloadStatus.COMPLETED.value if success else DownloadStatus.FAILED.value
+            )
+            result_progress = getattr(gallery, "_result_progress", None)
+            result_detail = getattr(gallery, "_result_detail", None)
+            result_downloaded_at = getattr(gallery, "_result_downloaded_at", None)
+            result_requested_quality = getattr(gallery, "_requested_quality", None)
+            result_resolved_quality = getattr(gallery, "_result_quality", None)
+
+            async with SessionLocal() as session:
+                async with session.begin():
+                    g = await session.get(Gallery, (gallery.gid, gallery.token))
+                    if g:
+                        g.requested_quality = result_requested_quality
+                        g.resolved_quality = result_resolved_quality
+                        if result_status == DownloadStatus.COMPLETED.value:
+                            g.status = DownloadStatus.COMPLETED
+                            g.downloaded_at = result_downloaded_at or datetime.now(timezone.utc)
+                            g.download_path = getattr(gallery, "download_path", None)
+                            g.error_msg = None
+                            g.retry_count = 0
+                            await append_gallery_log(
+                                gallery.gid,
+                                gallery.token,
+                                self._append_quality_summary(
                                     "下载完成",
                                     result_requested_quality,
                                     result_resolved_quality,
-                                )
-                                await self._emit_terminal_status(
-                                    g,
-                                    status=DownloadStatus.COMPLETED.value,
-                                    downloaded_at=g.downloaded_at,
-                                    detail=completion_detail or "下载完成",
-                                    requested_quality=result_requested_quality,
-                                    resolved_quality=result_resolved_quality,
-                                )
-                                await self._notify_download_outcome(
-                                    g,
-                                    status=DownloadStatus.COMPLETED.value,
-                                    downloaded_at=g.downloaded_at,
-                                    requested_quality=result_requested_quality,
-                                    resolved_quality=result_resolved_quality,
-                                )
-                            elif result_status == DownloadStatus.PARTIAL.value:
-                                partial_detail = self._append_quality_summary(
-                                    result_detail or g.error_msg or "部分下载完成，等待补抓",
-                                    result_requested_quality,
-                                    result_resolved_quality,
-                                )
-                                await self._emit_terminal_status(
-                                    g,
-                                    status=DownloadStatus.PARTIAL.value,
-                                    error_msg=g.error_msg,
-                                    detail=partial_detail or g.error_msg or "部分下载完成，等待补抓",
-                                    progress={
-                                        **result_progress,
-                                        "detail": partial_detail or result_progress.get("detail") or "",
-                                    } if result_progress else None,
-                                    requested_quality=result_requested_quality,
-                                    resolved_quality=result_resolved_quality,
-                                )
-                                await self._notify_download_outcome(
-                                    g,
-                                    status=DownloadStatus.PARTIAL.value,
-                                    error_msg=g.error_msg,
-                                    progress=result_progress,
-                                    requested_quality=result_requested_quality,
-                                    resolved_quality=result_resolved_quality,
-                                )
-                            elif result_status == "cancelled" or self.is_cancelled(g.gid):
-                                await realtime_hub.emit_cancelled(g.gid, title=g.title)
-                            else:
-                                failure_detail = self._append_quality_summary(
-                                    g.error_msg or "下载失败",
-                                    result_requested_quality,
-                                    result_resolved_quality,
-                                )
-                                await self._emit_terminal_status(
-                                    g,
-                                    status=DownloadStatus.FAILED.value,
-                                    error_msg=g.error_msg,
-                                    detail=failure_detail or g.error_msg or "下载失败",
-                                    requested_quality=result_requested_quality,
-                                    resolved_quality=result_resolved_quality,
-                                )
-                                await self._notify_download_outcome(
-                                    g,
-                                    status=DownloadStatus.FAILED.value,
-                                    error_msg=g.error_msg,
-                                    requested_quality=result_requested_quality,
-                                    resolved_quality=result_resolved_quality,
-                                )
-            except asyncio.CancelledError:
-                from app.services.gallery_log import append_gallery_log
-                await append_gallery_log(gallery.gid, gallery.token, "下载已取消", "warning")
-                await realtime_hub.clear_gallery(gallery.gid)
-                raise
-            except Exception as e:
-                logger.error(f"Error in concurrent download {gallery.gid}: {e}")
-                from app.services.gallery_log import append_gallery_log
-                await append_gallery_log(gallery.gid, gallery.token, f"下载异常: {str(e)}", "error")
-                async with SessionLocal() as session:
-                    async with session.begin():
-                        g = await session.get(Gallery, (gallery.gid, gallery.token))
-                        if g:
-                            g.status = DownloadStatus.FAILED
-                            g.error_msg = str(e)
-                            g.requested_quality = getattr(gallery, "_requested_quality", None)
-                            g.resolved_quality = getattr(gallery, "_result_quality", None)
+                                ) or "下载完成",
+                                "success",
+                                session=session,
+                            )
+                            await clear_failed_gallery(g.gid, session=session)
+                        elif result_status == DownloadStatus.PARTIAL.value:
+                            g.status = DownloadStatus.PARTIAL
+                            g.download_path = getattr(gallery, "download_path", None)
+                            g.retry_count += 1
+                            g.error_msg = gallery.error_msg or g.error_msg or "部分下载完成，存在缺页"
+                            partial_detail = self._append_quality_summary(
+                                result_detail or f"部分下载完成: {g.error_msg}",
+                                result_requested_quality,
+                                result_resolved_quality,
+                            )
+                            await append_gallery_log(
+                                gallery.gid,
+                                gallery.token,
+                                partial_detail or f"部分下载完成: {g.error_msg}",
+                                "warning",
+                                session=session,
+                            )
                             if not self.is_cancelled(g.gid):
                                 await upsert_failed_gallery(g, session=session)
-                        await session.commit()
-                        if g:
+                        elif result_status == "cancelled" or self.is_cancelled(g.gid):
+                            g.status = DownloadStatus.PENDING
+                            g.error_msg = None
+                            await append_gallery_log(
+                                gallery.gid,
+                                gallery.token,
+                                "下载已取消",
+                                "warning",
+                                session=session,
+                            )
+                        else:
+                            g.status = DownloadStatus.FAILED
+                            g.retry_count += 1
+                            g.error_msg = gallery.error_msg or g.error_msg or "Download failed"
+                            failure_detail = self._append_quality_summary(
+                                f"下载失败: {g.error_msg}",
+                                result_requested_quality,
+                                result_resolved_quality,
+                            )
+                            await append_gallery_log(
+                                gallery.gid,
+                                gallery.token,
+                                failure_detail or f"下载失败: {g.error_msg}",
+                                "error",
+                                session=session,
+                            )
+                            if not self.is_cancelled(g.gid):
+                                await upsert_failed_gallery(g, session=session)
+                    await session.commit()
+                    if g:
+                        if result_status == DownloadStatus.COMPLETED.value:
+                            completion_detail = self._append_quality_summary(
+                                "下载完成",
+                                result_requested_quality,
+                                result_resolved_quality,
+                            )
+                            await self._emit_terminal_status(
+                                g,
+                                status=DownloadStatus.COMPLETED.value,
+                                downloaded_at=g.downloaded_at,
+                                detail=completion_detail or "下载完成",
+                                requested_quality=result_requested_quality,
+                                resolved_quality=result_resolved_quality,
+                            )
+                            await self._notify_download_outcome(
+                                g,
+                                status=DownloadStatus.COMPLETED.value,
+                                downloaded_at=g.downloaded_at,
+                                requested_quality=result_requested_quality,
+                                resolved_quality=result_resolved_quality,
+                            )
+                        elif result_status == DownloadStatus.PARTIAL.value:
+                            partial_detail = self._append_quality_summary(
+                                result_detail or g.error_msg or "部分下载完成，等待补抓",
+                                result_requested_quality,
+                                result_resolved_quality,
+                            )
+                            await self._emit_terminal_status(
+                                g,
+                                status=DownloadStatus.PARTIAL.value,
+                                error_msg=g.error_msg,
+                                detail=partial_detail or g.error_msg or "部分下载完成，等待补抓",
+                                progress={
+                                    **result_progress,
+                                    "detail": partial_detail or result_progress.get("detail") or "",
+                                } if result_progress else None,
+                                requested_quality=result_requested_quality,
+                                resolved_quality=result_resolved_quality,
+                            )
+                            await self._notify_download_outcome(
+                                g,
+                                status=DownloadStatus.PARTIAL.value,
+                                error_msg=g.error_msg,
+                                progress=result_progress,
+                                requested_quality=result_requested_quality,
+                                resolved_quality=result_resolved_quality,
+                            )
+                        elif result_status == "cancelled" or self.is_cancelled(g.gid):
+                            await realtime_hub.emit_cancelled(g.gid, title=g.title)
+                        else:
+                            failure_detail = self._append_quality_summary(
+                                g.error_msg or "下载失败",
+                                result_requested_quality,
+                                result_resolved_quality,
+                            )
                             await self._emit_terminal_status(
                                 g,
                                 status=DownloadStatus.FAILED.value,
-                                error_msg=str(e),
-                                detail=self._append_quality_summary(
-                                    str(e),
-                                    getattr(gallery, "_requested_quality", None),
-                                    getattr(gallery, "_result_quality", None),
-                                ) or str(e),
-                                requested_quality=getattr(gallery, "_requested_quality", None),
-                                resolved_quality=getattr(gallery, "_result_quality", None),
+                                error_msg=g.error_msg,
+                                detail=failure_detail or g.error_msg or "下载失败",
+                                requested_quality=result_requested_quality,
+                                resolved_quality=result_resolved_quality,
                             )
                             await self._notify_download_outcome(
                                 g,
                                 status=DownloadStatus.FAILED.value,
-                                error_msg=str(e),
-                                requested_quality=getattr(gallery, "_requested_quality", None),
-                                resolved_quality=getattr(gallery, "_result_quality", None),
+                                error_msg=g.error_msg,
+                                requested_quality=result_requested_quality,
+                                resolved_quality=result_resolved_quality,
                             )
-            finally:
-                self._active_count = max(0, self._active_count - 1)
-                self._active_downloads.pop(gallery.gid, None)
+        except asyncio.CancelledError:
+            from app.services.gallery_log import append_gallery_log
+            await append_gallery_log(gallery.gid, gallery.token, "下载已取消", "warning")
+            await realtime_hub.clear_gallery(gallery.gid)
+            raise
+        except Exception as e:
+            logger.error(f"Error in concurrent download {gallery.gid}: {e}")
+            from app.services.gallery_log import append_gallery_log
+            await append_gallery_log(gallery.gid, gallery.token, f"下载异常: {str(e)}", "error")
+            async with SessionLocal() as session:
+                async with session.begin():
+                    g = await session.get(Gallery, (gallery.gid, gallery.token))
+                    if g:
+                        g.status = DownloadStatus.FAILED
+                        g.error_msg = str(e)
+                        g.requested_quality = getattr(gallery, "_requested_quality", None)
+                        g.resolved_quality = getattr(gallery, "_result_quality", None)
+                        if not self.is_cancelled(g.gid):
+                            await upsert_failed_gallery(g, session=session)
+                    await session.commit()
+                    if g:
+                        await self._emit_terminal_status(
+                            g,
+                            status=DownloadStatus.FAILED.value,
+                            error_msg=str(e),
+                            detail=self._append_quality_summary(
+                                str(e),
+                                getattr(gallery, "_requested_quality", None),
+                                getattr(gallery, "_result_quality", None),
+                            ) or str(e),
+                            requested_quality=getattr(gallery, "_requested_quality", None),
+                            resolved_quality=getattr(gallery, "_result_quality", None),
+                        )
+                        await self._notify_download_outcome(
+                            g,
+                            status=DownloadStatus.FAILED.value,
+                            error_msg=str(e),
+                            requested_quality=getattr(gallery, "_requested_quality", None),
+                            resolved_quality=getattr(gallery, "_result_quality", None),
+                        )
+        finally:
+            self._active_count = max(0, self._active_count - 1)
+            self._active_downloads.pop(gallery.gid, None)
 
     async def _process_queue(self):
         async with SessionLocal() as session:
@@ -693,31 +700,28 @@ class DownloaderService:
                 stmt = select(Gallery).where(
                     Gallery.status.in_([DownloadStatus.PENDING, DownloadStatus.OUTDATED])
                 ).order_by(Gallery.priority.desc(), Gallery.created_at.asc()).limit(1)
-                
+
                 result = await session.execute(stmt)
                 gallery = result.scalar_one_or_none()
-                
+
                 if not gallery:
                     return
 
                 # Lock it
                 gallery.status = DownloadStatus.DOWNLOADING
                 await session.commit()
-                
+
                 gid = gallery.gid
-                
+
                 # Clear any stale cancelled flag from previous deletion
                 self.clear_cancelled(gid)
 
         task = asyncio.create_task(self._run_sequential_gallery(gallery))
         self._active_downloads[gid] = task
-        try:
-            await task
-        except asyncio.CancelledError:
-            logger.info(f"Sequential download task cancelled for gid={gid}")
-        finally:
-            if self._active_downloads.get(gid) is task:
-                del self._active_downloads[gid]
+        def cleanup(done):
+            if self._active_downloads.get(gid) is done:
+                self._active_downloads.pop(gid, None)
+        task.add_done_callback(cleanup)
 
     async def _run_sequential_gallery(self, gallery: Gallery):
         gid = gallery.gid
@@ -738,7 +742,7 @@ class DownloaderService:
                 detail=f"准备启动下载 ({mode})",
             )
             await append_gallery_log(gid, token, f"开始下载 (模式: {mode})")
-            
+
             success = await self._download_gallery(gallery, mode)
             result_status = getattr(gallery, "_result_status", None) or (
                 DownloadStatus.COMPLETED.value if success else DownloadStatus.FAILED.value
@@ -748,7 +752,7 @@ class DownloaderService:
             result_downloaded_at = getattr(gallery, "_result_downloaded_at", None)
             result_requested_quality = getattr(gallery, "_requested_quality", None)
             result_resolved_quality = getattr(gallery, "_result_quality", None)
-            
+
             async with SessionLocal() as session:
                 async with session.begin():
                     g = await session.get(Gallery, (gallery.gid, gallery.token)) # composite key query?
@@ -959,6 +963,9 @@ class DownloaderService:
             )
             gallery._requested_quality = quality_preference
             output_template_settings = self._build_output_template_settings(current_settings)
+            # Validate destination before making a paid archive request or fetching images.
+            resolve_output_targets(settings=output_template_settings, context=self._build_output_context(
+                gallery, quality=quality_preference, downloaded_at=datetime.now(timezone.utc)))
 
             if mode == DownloadMode.ARCHIVE or mode == "archive":
                 if not gallery.token:
@@ -969,18 +976,21 @@ class DownloaderService:
                 temp_root.mkdir(parents=True, exist_ok=True)
                 temp_file = temp_root / f"{gallery.gid}.download"
 
-                if temp_file.exists():
+                cache = ArchiveCache(temp_file, gallery.gid, gallery.token, quality_preference)
+                cached = await asyncio.to_thread(cache.valid)
+                if temp_file.exists() and not cached:
                     logger.warning(f"Removing stale temp archive before download: {temp_file}")
                     self._cleanup_archive_temp_file(temp_file)
+                    cache.forget()
 
                 is_cancelled = lambda: self.is_cancelled(gallery.gid)
                 progress_callback = lambda **payload: self._set_progress(gallery, **payload)
                 max_retries = int(current_settings.get("max_retries", 3))
                 refresh_attempt = 0
                 max_refresh_attempts = 1
-                success = False
+                success = cached
 
-                while True:
+                while not success:
                     dl_url, size = await GalleryArchiver.prepare_and_poll(
                         gid=gallery.gid,
                         token=gallery.token,
@@ -1018,6 +1028,7 @@ class DownloaderService:
                         self._cleanup_archive_temp_file(temp_file)
                         return False
                     if success:
+                        await asyncio.to_thread(cache.mark_complete)
                         break
 
                     if temp_file.exists():
@@ -1074,6 +1085,7 @@ class DownloaderService:
                             if conflict_path.exists():
                                 conflict_path.unlink()
                     shutil.move(str(temp_file), str(final_file))
+                    cache.forget()
                     gallery._result_status = DownloadStatus.COMPLETED.value
                     gallery._result_detail = "下载完成"
                     gallery._result_downloaded_at = completed_at
@@ -1089,7 +1101,7 @@ class DownloaderService:
                     gallery._result_quality = quality_preference
                     logger.error(f"Archive download failed for {gallery.gid}")
                     return False
-            
+
             elif mode == DownloadMode.NATIVE_CRAWL or mode == "native_crawl":
                 from app.core.native_crawler import NativeCrawler
                 domain = current_settings.get("eh_domain") or settings.EH_DOMAIN
@@ -1140,7 +1152,7 @@ class DownloaderService:
                     if not gallery.error_msg:
                         gallery.error_msg = result.error or "原生爬虫下载失败"
                 return result.success
-                
+
         except Exception as e:
             logger.error(f"Download failed for {gallery.gid}: {e}")
             gallery._result_status = DownloadStatus.FAILED.value
@@ -1148,7 +1160,7 @@ class DownloaderService:
                 gallery._result_quality = getattr(gallery, "_requested_quality", None)
             gallery.error_msg = str(e)
             return False
-            
+
         return False
 
 downloader = DownloaderService()

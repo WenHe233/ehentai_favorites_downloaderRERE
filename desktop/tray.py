@@ -54,6 +54,7 @@ class TrayManager:
         self._config_path = config_path
         self._icon: Optional[pystray.Icon] = None
         self._thread: Optional[threading.Thread] = None
+        self._quitting = False
 
     def start(self) -> None:
         """Start the tray icon in a background thread."""
@@ -90,6 +91,8 @@ class TrayManager:
             True  -> allow the window to close (quit)
             False -> prevent closing (minimize to tray instead)
         """
+        if self._quitting:
+            return True
         # NOTE: We must NOT call window.evaluate_js() here because the
         # closing callback runs on the GUI thread and evaluate_js also
         # dispatches to the GUI thread, causing a deadlock.
@@ -108,6 +111,7 @@ class TrayManager:
 
         if result == IDOK:
             # User chose "OK" = quit
+            self._quitting = True
             return True
         else:
             # User chose "Cancel" = minimize to tray

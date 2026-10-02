@@ -1,6 +1,8 @@
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from app.core.spa import SPAStaticFiles
+from app.core.runtime import VERSION
 from app.core.config import settings
 from app.core.security import require_authenticated_user
 from app.db.database import SessionLocal, init_models
@@ -9,6 +11,16 @@ from loguru import logger
 from sqlalchemy.future import select
 import sys
 import asyncio
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(application):
+    await startup_event()
+    try:
+        yield
+    finally:
+        await shutdown_event()
 
 # Configure Logger
 logger.remove()
@@ -20,10 +32,11 @@ logger.add(
 logger.add(settings.DATA_DIR / "app.log", rotation="10 MB", level="INFO")
 
 app = FastAPI(
+    lifespan=lifespan,
     title=settings.APP_NAME,
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     description="Backend for ehentai_favorites_downloaderRERE",
-    version="1.0.0",
+    version=VERSION,
 )
 
 cors_allow_origins = settings.CORS_ALLOW_ORIGINS or []
@@ -47,6 +60,23 @@ from app.services.startup_recovery import startup_recovery_service
 from app.services.bot import start_bot, stop_bot
 from app.services.config_service import config_service
 
+app.state.ready = False
+background_tasks = set()
+
+
+def start_background(coroutine):
+    task = asyncio.create_task(coroutine)
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+    return task
+
+
+@app.get(f"{settings.API_V1_STR}/health")
+async def health():
+    from fastapi.responses import JSONResponse
+    return JSONResponse({"status": "ok" if app.state.ready else "starting", "version": VERSION}, status_code=200 if app.state.ready else 503)
+
+
 app.include_router(auth_router, prefix=settings.API_V1_STR)
 app.include_router(
     api_router,
@@ -57,9 +87,8 @@ app.include_router(
 # Serve the pre-built React frontend when running in desktop/bundled mode.
 # html=True makes it fall back to index.html for any unmatched path (SPA routing).
 if settings.FRONTEND_DIST_DIR.is_dir():
-    app.mount("/", StaticFiles(directory=settings.FRONTEND_DIST_DIR, html=True), name="frontend")
+    app.mount("/", SPAStaticFiles(directory=settings.FRONTEND_DIST_DIR, html=True), name="frontend")
 
-@app.on_event("startup")
 async def startup_event():
     logger.info("Initializing database models...")
     await init_models()
@@ -111,11 +140,11 @@ async def startup_event():
         logger.warning(
             f"Restored {restored_notification_count} buffered Telegram notification(s) after startup."
         )
-    
+
     # Re-enable downloader with proper isolation
     logger.info("Starting Downloader Service...")
     try:
-        asyncio.create_task(downloader.start())
+        start_background(downloader.start())
     except Exception as e:
         logger.error(f"Downloader start error: {e}")
 
@@ -127,13 +156,14 @@ async def startup_event():
 
     if runtime_settings.get("telegram_bot_token"):
         logger.info("Starting Telegram Bot...")
-        asyncio.create_task(start_bot())
-    
+        start_background(start_bot())
+
+    app.state.ready = True
     logger.info("Application startup complete.")
 
 
-@app.on_event("shutdown")
 async def shutdown_event():
+    app.state.ready = False
     logger.info("Application shutdown initiated...")
 
     from app.services.scheduler import stop_scheduler
@@ -142,6 +172,11 @@ async def shutdown_event():
     await stop_bot()
 
     await downloader.stop()
+    await updater_stop()
+    await notification_service._cancel_flush_task()
+    for task in list(background_tasks):
+        task.cancel()
+    await asyncio.gather(*background_tasks, return_exceptions=True)
 
     from app.core.client import eh_client
     await eh_client.close()
@@ -151,3 +186,10 @@ async def shutdown_event():
 
     logger.info("Application shutdown complete.")
 
+
+async def updater_stop():
+    from app.services.updater import updater
+    task = updater._background_sync_task
+    if task and not task.done():
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

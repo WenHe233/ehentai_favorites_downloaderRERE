@@ -1,32 +1,40 @@
 {
   "name": "efdrr-frontend",
   "private": true,
-  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "format": "prettier --write src"
   },
   "dependencies": {
-    "@ant-design/icons": "^6.1.0",
-    "antd": "^6.1.2",
+    "@tailwindcss/vite": "^4.1.18",
     "autoprefixer": "^10.4.23",
-    "axios": "1.14.0",
+    "axios": "^1.20.0",
+    "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "copy-to-clipboard": "^3.3.3",
-    "dayjs": "^1.11.19",
+    "lucide-react": "^1.50.0",
     "postcss": "^8.5.6",
+    "radix-ui": "^1.6.7",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.11.0",
+    "sonner": "^2.0.8",
     "swr": "^2.3.8",
+    "tailwind-merge": "^3.7.0",
     "tailwindcss": "^4.1.18",
-    "@tailwindcss/vite": "^4.1.18"
+    "tw-animate-css": "^1.4.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
+    "@playwright/test": "^1.63.0",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",
@@ -35,8 +43,11 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
+    "jsdom": "^30.1.1",
+    "prettier": "^3.9.9",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
-    "vite": "^7.2.4"
+    "vite": "^7.2.4",
+    "vitest": "^5.0.3"
   }
 }

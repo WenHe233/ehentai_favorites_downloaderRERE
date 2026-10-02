@@ -306,3 +306,12 @@
 - `409`：操作冲突，活跃下载未能及时停止
 - `429`：登录尝试过于频繁
 - `500`：后端内部异常
+
+## 1.0.0 补充
+
+- GET /api/v1/health：无须登录，返回 status（ok 或 starting）和 version；未就绪时返回 503。
+- 画廊列表新增 download_path 字段，用于查看实际输出路径。
+- POST /auth/eh-refresh-igneous 返回 status 和 igneous_configured，不返回 Cookie 原文。
+- 同步运行期间重置同步进度返回 409，避免覆盖运行中的游标。
+- 已在下载的画廊重复提交返回 Exists，保持当前任务。
+- 重试读取当前下载配置；关闭截断导致路径过长时，在网络下载前返回任务错误。

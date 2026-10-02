@@ -1,156 +1,119 @@
-import React, { Suspense, lazy, useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Space, Spin, Typography } from 'antd';
-import axios from 'axios';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
-import ApiConnectionSettings from './components/ApiConnectionSettings';
-import api, { buildApiUrl, useApiBaseUrl } from './lib/api';
-import { clearAuthToken, getAuthToken } from './lib/auth';
-
-const AppLayout = lazy(() => import('./components/AppLayout'));
-const Dashboard = lazy(() => import('./pages/Dashboard'));
-const Galleries = lazy(() => import('./pages/Galleries'));
-const Login = lazy(() => import('./pages/Login'));
-const Settings = lazy(() => import('./pages/Settings'));
-
-interface AuthConfigResponse {
-  auth_enabled: boolean;
-}
-
-const fullscreenSpinner = (
-  <div className="min-h-screen flex items-center justify-center">
-    <Spin size="large" />
-  </div>
-);
-
-const routeSpinner = (
-  <div className="min-h-[240px] flex items-center justify-center">
-    <Spin size="large" />
-  </div>
-);
-
-const App: React.FC = () => {
-  const apiBaseUrl = useApiBaseUrl();
-  const [loading, setLoading] = useState(true);
-  const [authEnabled, setAuthEnabled] = useState(false);
-  const [authenticated, setAuthenticated] = useState(false);
-  const [connectionError, setConnectionError] = useState<string | null>(null);
-
-  const bootstrapAuth = useCallback(async () => {
-    setLoading(true);
-    setConnectionError(null);
-
-    try {
-      const response = await axios.get<AuthConfigResponse>(buildApiUrl('/auth/config', apiBaseUrl), {
-        timeout: 10000,
-      });
-
-      const enabled = Boolean(response.data.auth_enabled);
-      setAuthEnabled(enabled);
-
-      if (!enabled) {
-        setAuthenticated(true);
-        return;
-      }
-
-      if (!getAuthToken()) {
-        setAuthenticated(false);
-        return;
-      }
-
-      try {
-        await api.get('/auth/me');
-        setAuthenticated(true);
-      } catch {
-        clearAuthToken();
-        setAuthenticated(false);
-      }
-    } catch (error) {
-      setAuthEnabled(false);
-      setAuthenticated(false);
-      if (axios.isAxiosError(error)) {
-        setConnectionError(error.response?.data?.detail || error.message || '无法连接到后端服务');
-      } else {
-        setConnectionError('无法连接到后端服务');
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [apiBaseUrl]);
-
+import { lazy, Suspense, useEffect, useState } from "react";
+import axios from "axios";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { SWRConfig } from "swr";
+import api, { buildApiUrl, useApiBaseUrl } from "@/lib/api";
+import { clearAuthToken, getAuthToken } from "@/lib/auth";
+import { Loading, ErrorPanel } from "@/components/common";
+import ApiConnectionSettings from "@/components/ApiConnectionSettings";
+const AppLayout = lazy(() => import("@/components/AppLayout"));
+const Dashboard = lazy(() => import("@/pages/Dashboard"));
+const Galleries = lazy(() => import("@/pages/Galleries"));
+const Settings = lazy(() => import("@/pages/Settings"));
+const Login = lazy(() => import("@/pages/Login"));
+function Connection({ base }: { base: string }) {
+  const [state, setState] = useState<{
+    loading: boolean;
+    enabled: boolean;
+    authenticated: boolean;
+    error?: unknown;
+  }>({ loading: true, enabled: false, authenticated: false });
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    void bootstrapAuth();
-
-    const onUnauthorized = () => {
-      setAuthenticated(false);
-    };
-
-    window.addEventListener('auth:unauthorized', onUnauthorized);
+    let active = true;
+    const controller = new AbortController();
+    async function load() {
+      try {
+        const { data } = await axios.get(buildApiUrl("/auth/config", base), {
+          signal: controller.signal,
+          timeout: 10000,
+        });
+        let authenticated = !data.auth_enabled;
+        if (data.auth_enabled && getAuthToken()) {
+          try {
+            await api.get("/auth/me", { signal: controller.signal });
+            authenticated = true;
+          } catch (error) {
+            if (axios.isAxiosError(error) && error.response?.status === 401)
+              clearAuthToken();
+            else throw error;
+          }
+        }
+        if (active)
+          setState({
+            loading: false,
+            enabled: data.auth_enabled,
+            authenticated,
+          });
+      } catch (error) {
+        if (active)
+          setState({
+            loading: false,
+            enabled: false,
+            authenticated: false,
+            error,
+          });
+      }
+    }
+    void load();
+    const unauthorized = () =>
+      setState((current) => ({ ...current, authenticated: false }));
+    window.addEventListener("auth:unauthorized", unauthorized);
     return () => {
-      window.removeEventListener('auth:unauthorized', onUnauthorized);
+      active = false;
+      controller.abort();
+      window.removeEventListener("auth:unauthorized", unauthorized);
     };
-  }, [bootstrapAuth]);
-
-  const handleLogout = () => {
-    clearAuthToken();
-    setAuthenticated(false);
-  };
-
-  if (loading) {
-    return fullscreenSpinner;
-  }
-
-  if (connectionError) {
+  }, [base, attempt]);
+  if (state.loading) return <Loading />;
+  if (state.error)
     return (
-      <div className="min-h-screen flex items-center justify-center px-6">
-        <div style={{ width: '100%', maxWidth: 560 }}>
-          <Space direction="vertical" size={20} style={{ width: '100%' }}>
-            <Typography.Title level={2} style={{ margin: 0 }}>
-              无法连接后端
-            </Typography.Title>
-            <Alert
-              type="error"
-              showIcon
-              message="当前前端无法连接到后端服务"
-              description={connectionError}
-            />
-            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-              请检查后端是否已启动，或在“连接设置”中修改正确的后端地址。
-            </Typography.Paragraph>
-            <Space wrap>
-              <ApiConnectionSettings buttonText="连接设置" onSaved={() => void bootstrapAuth()} />
-              <Button onClick={() => void bootstrapAuth()}>重新检测</Button>
-            </Space>
-          </Space>
-        </div>
+      <div className="mx-auto max-w-lg space-y-6 px-6 py-24">
+        <h1 className="page-heading">无法连接后端</h1>
+        <ErrorPanel
+          error={state.error}
+          retry={() => setAttempt((value) => value + 1)}
+        />
+        <ApiConnectionSettings
+          onSaved={() => setAttempt((value) => value + 1)}
+        />
       </div>
     );
-  }
-
-  const needsLogin = authEnabled && !authenticated;
-
+  const needsLogin = state.enabled && !state.authenticated;
   return (
     <BrowserRouter>
-      <Suspense fallback={routeSpinner}>
+      <Suspense fallback={<Loading />}>
         <Routes>
-          {authEnabled && (
-            <Route
-              path="/login"
-              element={
-                authenticated ? (
-                  <Navigate to="/" replace />
-                ) : (
-                  <Login onLoginSuccess={() => setAuthenticated(true)} />
-                )
-              }
-            />
-          )}
+          <Route
+            path="/login"
+            element={
+              needsLogin ? (
+                <Login
+                  onLoginSuccess={() =>
+                    setState((current) => ({ ...current, authenticated: true }))
+                  }
+                />
+              ) : (
+                <Navigate to="/" replace />
+              )
+            }
+          />
           <Route
             path="/"
             element={
               needsLogin ? (
                 <Navigate to="/login" replace />
               ) : (
-                <AppLayout authEnabled={authEnabled} onLogout={handleLogout} />
+                <AppLayout
+                  authEnabled={state.enabled}
+                  onLogout={() => {
+                    clearAuthToken();
+                    setState((current) => ({
+                      ...current,
+                      authenticated: false,
+                    }));
+                  }}
+                />
               )
             }
           >
@@ -163,6 +126,15 @@ const App: React.FC = () => {
       </Suspense>
     </BrowserRouter>
   );
-};
-
-export default App;
+}
+export default function App() {
+  const base = useApiBaseUrl();
+  return (
+    <SWRConfig
+      key={base}
+      value={{ provider: () => new Map(), shouldRetryOnError: false }}
+    >
+      <Connection key={base} base={base} />
+    </SWRConfig>
+  );
+}

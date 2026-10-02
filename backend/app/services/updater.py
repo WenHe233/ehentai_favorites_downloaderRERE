@@ -17,7 +17,7 @@ from app.services.sync_state import (
     parse_sync_timestamp,
     read_sync_state,
     restore_failed_galleries,
-    write_sync_state,
+    write_sync_progress,
 )
 from app.services.realtime import realtime_hub
 
@@ -83,7 +83,7 @@ class UpdaterService:
                 monitored_favcats = current_settings.get("monitored_favcats")
 
                 # Default to all favcats if not specified
-                if not monitored_favcats:
+                if monitored_favcats is None:
                     monitored_favcats = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
                 logger.info(f"Will sync favcats: {monitored_favcats}")
@@ -121,7 +121,7 @@ class UpdaterService:
                             previous = parse_sync_timestamp(sync_state["last_favorited"].get(state_key))
                             if previous is None or latest_favorited > previous:
                                 sync_state["last_favorited"][state_key] = format_sync_timestamp(latest_favorited)
-                                await write_sync_state(sync_state)
+                                await write_sync_progress(sync_state)
                                 sync_state_changed = True
                     else:
                         sync_completed = False
@@ -131,7 +131,10 @@ class UpdaterService:
                     sync_state_changed = True
 
                 if sync_state_changed:
-                    await write_sync_state(sync_state)
+                    await write_sync_progress(sync_state)
+
+                if not sync_completed:
+                    raise RuntimeError("部分收藏夹同步失败，已保留成功分类的进度，请重试")
 
                 logger.info(f"Favorites Sync completed. Processed {total_processed} items total.")
                 await realtime_hub.emit_sync_status(
@@ -196,7 +199,7 @@ class UpdaterService:
 
             for item in rows:
                 item_date = parse_sync_timestamp(item.get("favorited"))
-                if item_date and item_date <= since_dt:
+                if item_date and item_date < since_dt:
                     logger.info(
                         f"Reached sync cutoff for favcat {favcat}: {item_date.strftime('%Y-%m-%d %H:%M')}"
                     )
@@ -224,19 +227,19 @@ class UpdaterService:
                     favorited_at = parse_sync_timestamp(item.get("favorited"))
                     if favorited_at and (latest_favorited is None or favorited_at > latest_favorited):
                         latest_favorited = favorited_at
-                    
+
                     stmt = select(Gallery).where(Gallery.gid == gid)
                     result = await session.execute(stmt)
                     existing = result.scalar_one_or_none()
-                    
+
                     if not existing:
                         # New gallery - parse favorited time
                         new_g = Gallery(
                             gid=gid,
                             token=token,
                             title=item["title"],
-                            posted=datetime.now(timezone.utc), 
-                            filecount=0, 
+                            posted=datetime.now(timezone.utc),
+                            filecount=0,
                             status=DownloadStatus.PENDING,
                             favorited_at=favorited_at,
                             favcat=item.get("favcat"),
@@ -347,10 +350,6 @@ class UpdaterService:
         last_favorited = parse_sync_timestamp(sync_state.get("last_favorited", {}).get(str(favcat)))
         if last_favorited:
             candidates.append(last_favorited)
-
-        last_run_ts = parse_sync_timestamp(sync_state.get("last_run_ts"))
-        if last_run_ts:
-            candidates.append(last_run_ts)
 
         return max(candidates) if candidates else datetime.min
 

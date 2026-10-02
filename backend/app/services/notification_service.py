@@ -71,6 +71,7 @@ class NotificationBufferState:
 class NotificationService:
     def __init__(self) -> None:
         self._buffer_lock = asyncio.Lock()
+        self._delivery_lock = asyncio.Lock()
         self._flush_task: Optional[asyncio.Task] = None
         self._scheduled_flush_at: Optional[datetime] = None
 
@@ -678,6 +679,10 @@ class NotificationService:
         await self._flush_pending(runtime)
 
     async def _flush_pending(self, runtime: Optional[TelegramNotificationSettings] = None) -> None:
+        async with self._delivery_lock:
+            await self._flush_pending_locked(runtime)
+
+    async def _flush_pending_locked(self, runtime: Optional[TelegramNotificationSettings] = None) -> None:
         active_runtime = runtime or await self._get_runtime_settings()
         if not active_runtime.enabled or not active_runtime.token or not active_runtime.recipients:
             return

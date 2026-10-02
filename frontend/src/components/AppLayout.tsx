@@ -1,176 +1,136 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Button, Layout, Menu, Skeleton } from 'antd';
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
-    DashboardOutlined,
-    LogoutOutlined,
-    PictureOutlined,
-    SettingOutlined,
-} from '@ant-design/icons';
-import { Link, Outlet, useLocation } from 'react-router-dom';
-import api from '../lib/api';
-import AppBrandIcon from './AppBrandIcon';
-import ThemeToggle from './ThemeToggle';
-import { useAppTheme } from '../lib/theme';
-
-const { Sider, Content, Footer } = Layout;
-
-interface AppLayoutProps {
-    authEnabled: boolean;
-    onLogout: () => void;
+  LayoutDashboard,
+  Library,
+  ListTodo,
+  Settings2,
+  LogOut,
+  Menu,
+  ArrowUpRight,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  Sheet,
+  SheetContent,
+  SheetTrigger,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
+import ThemeToggle from "./ThemeToggle";
+import ApiConnectionSettings from "./ApiConnectionSettings";
+import { cn } from "@/lib/utils";
+const nav = [
+  { to: "/", label: "总览", icon: LayoutDashboard },
+  { to: "/galleries", label: "下载任务", icon: ListTodo },
+  { to: "/settings", label: "设置", icon: Settings2 },
+];
+function Navigation() {
+  return (
+    <nav className="space-y-1">
+      {nav.map(({ to, label, icon: Icon }) => (
+        <NavLink
+          key={to}
+          to={to}
+          end={to === "/"}
+          className={({ isActive }) =>
+            cn(
+              "flex items-center gap-3 rounded-md px-3 py-2.5 text-sm transition-colors",
+              isActive
+                ? "bg-accent font-medium text-foreground"
+                : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+            )
+          }
+        >
+          <Icon className="size-4" />
+          {label}
+        </NavLink>
+      ))}
+    </nav>
+  );
 }
-
-interface StatusSummary {
-    downloader_running: boolean;
-    queue_len: number;
-    active_downloads: number;
-    sync_running: boolean;
+export default function AppLayout({
+  authEnabled,
+  onLogout,
+}: {
+  authEnabled: boolean;
+  onLogout: () => void;
+}) {
+  const path = useLocation().pathname;
+  return (
+    <div className="min-h-svh">
+      <aside className="fixed inset-y-0 left-0 z-20 hidden w-56 flex-col border-r bg-card px-4 py-6 md:flex">
+        <a href="/" className="mb-10 flex items-center gap-3 px-2">
+          <div className="rounded-lg bg-primary p-2 text-primary-foreground">
+            <Library className="size-5" />
+          </div>
+          <div>
+            <div className="font-semibold tracking-wider">EFDRR</div>
+            <div className="mt-0.5 text-[11px] text-muted-foreground">
+              收藏与下载管理
+            </div>
+          </div>
+        </a>
+        <Navigation />
+        <div className="mt-auto space-y-5 px-2">
+          <a
+            className="flex items-center justify-between text-xs text-muted-foreground hover:text-foreground"
+            href="https://e-hentai.org/favorites.php"
+            target="_blank"
+            rel="noreferrer"
+          >
+            打开收藏夹
+            <ArrowUpRight className="size-3.5" />
+          </a>
+          <div className="flex items-center justify-between border-t pt-4 text-xs text-muted-foreground">
+            <span>EFDRR</span>
+            <span className="font-mono">v{__APP_VERSION__}</span>
+          </div>
+        </div>
+      </aside>
+      <div className="md:pl-56">
+        <header className="sticky top-0 z-10 flex h-16 items-center gap-3 border-b bg-background/95 px-5 backdrop-blur md:px-8">
+          <Sheet>
+            <SheetTrigger asChild>
+              <Button
+                className="md:hidden"
+                variant="ghost"
+                size="icon"
+                aria-label="打开导航"
+              >
+                <Menu />
+              </Button>
+            </SheetTrigger>
+            <SheetContent side="left" className="w-64 p-6">
+              <SheetTitle>EFDRR</SheetTitle>
+              <SheetDescription>收藏与下载管理</SheetDescription>
+              <Navigation />
+            </SheetContent>
+          </Sheet>
+          <span className="text-sm text-muted-foreground">
+            工作空间 <span className="mx-2 opacity-40">/</span>{" "}
+            <span className="text-foreground">
+              {nav.find((item) => item.to === path)?.label || "总览"}
+            </span>
+          </span>
+          <div className="ml-auto flex items-center gap-2">
+            <ApiConnectionSettings />
+            <ThemeToggle />
+            {authEnabled && (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="退出登录"
+                onClick={onLogout}
+              >
+                <LogOut />
+              </Button>
+            )}
+          </div>
+        </header>
+        <main className="mx-auto max-w-[1600px] p-5 md:p-8 lg:p-10">
+          <Outlet />
+        </main>
+      </div>
+    </div>
+  );
 }
-
-const AppLayout: React.FC<AppLayoutProps> = ({ authEnabled, onLogout }) => {
-    const [collapsed, setCollapsed] = useState(false);
-    const [status, setStatus] = useState<StatusSummary | null>(null);
-    const location = useLocation();
-    const { resolvedMode } = useAppTheme();
-
-    useEffect(() => {
-        let isMounted = true;
-
-        const fetchStatus = async () => {
-            try {
-                const response = await api.get<StatusSummary>('/status');
-                if (isMounted) {
-                    setStatus(response.data);
-                }
-            } catch (error) {
-                console.error(error);
-            }
-        };
-
-        void fetchStatus();
-        const timer = window.setInterval(() => {
-            void fetchStatus();
-        }, 25000);
-
-        return () => {
-            isMounted = false;
-            window.clearInterval(timer);
-        };
-    }, []);
-
-    const menuItems = useMemo(
-        () => [
-            {
-                key: '/',
-                icon: <DashboardOutlined />,
-                label: <Link to="/">仪表盘</Link>,
-            },
-            {
-                key: '/galleries',
-                icon: <PictureOutlined />,
-                label: <Link to="/galleries">任务中心</Link>,
-            },
-            {
-                key: '/settings',
-                icon: <SettingOutlined />,
-                label: <Link to="/settings">系统设置</Link>,
-            },
-        ],
-        []
-    );
-
-    const sidebarMetrics = [
-        {
-            label: '下载器',
-            value: status ? (status.downloader_running ? '在线' : '离线') : '...',
-        },
-        {
-            label: '同步',
-            value: status ? (status.sync_running ? '运行中' : '空闲') : '...',
-        },
-        {
-            label: '活跃任务',
-            value: status ? `${status.active_downloads}` : '...',
-        },
-        {
-            label: '等待队列',
-            value: status ? `${status.queue_len}` : '...',
-        },
-    ];
-
-    return (
-        <Layout className="app-shell">
-            <Sider
-                className="app-shell__sider"
-                collapsible
-                width={280}
-                collapsedWidth={88}
-                collapsed={collapsed}
-                onCollapse={(value) => setCollapsed(value)}
-                theme={resolvedMode === 'dark' ? 'dark' : 'light'}
-            >
-                <div className="app-shell__brand">
-                    <div className="app-shell__brand-mark">
-                        <AppBrandIcon size={52} />
-                    </div>
-                    {!collapsed && (
-                        <div>
-                            <div className="app-shell__brand-title">EFDRR</div>
-                            <div className="app-shell__brand-subtitle">ehentai_favorites_downloaderRERE</div>
-                        </div>
-                    )}
-                </div>
-
-                {!collapsed && (
-                    <div className="app-shell__brand-panel">
-                        {status ? (
-                            <div className="app-shell__metrics-grid">
-                                {sidebarMetrics.map((metric) => (
-                                    <div key={metric.label} className="app-shell__metric-chip">
-                                        <span>{metric.label}</span>
-                                        <strong>{metric.value}</strong>
-                                    </div>
-                                ))}
-                            </div>
-                        ) : (
-                            <Skeleton active paragraph={{ rows: 2 }} title={false} />
-                        )}
-                    </div>
-                )}
-
-                <Menu
-                    className="app-shell__menu"
-                    mode="inline"
-                    selectedKeys={[location.pathname]}
-                    items={menuItems}
-                    theme={resolvedMode === 'dark' ? 'dark' : 'light'}
-                />
-
-                <div className="app-shell__sidebar-footer">
-                    <div className="app-shell__sidebar-actions">
-                        <ThemeToggle compact={collapsed} />
-                        {authEnabled && (
-                            <Button type="text" icon={<LogoutOutlined />} onClick={onLogout}>
-                                {!collapsed && '退出登录'}
-                            </Button>
-                        )}
-                    </div>
-                    {!collapsed && <div className="app-shell__sidebar-version">v1.0.0</div>}
-                </div>
-            </Sider>
-
-            <Layout className="app-shell__main">
-                <Content className="app-shell__content">
-                    <div className="app-shell__panel">
-                        <Outlet />
-                    </div>
-                </Content>
-
-                <Footer className="app-shell__footer">
-                    ehentai_favorites_downloaderRERE ©{new Date().getFullYear()} · EFDRR 控制台
-                </Footer>
-            </Layout>
-        </Layout>
-    );
-};
-
-export default AppLayout;

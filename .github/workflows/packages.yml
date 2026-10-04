@@ -1,0 +1,59 @@
+name: Native release packages
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-15]
+        flavor: [cli, gui]
+    runs-on: ${{ matrix.runner }}
+    env:
+      PYTHONUTF8: '1'
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - if: runner.os == 'Linux' && matrix.flavor == 'gui'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb stalonetray libegl1 libopengl0 libnss3 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0 libasound2t64
+      - name: Install locked runtime and build dependencies
+        run: |
+          python -m pip install --require-hashes -r backend/requirements.txt
+          python -m pip install --require-hashes -r desktop/build-requirements.lock
+      - if: matrix.flavor == 'gui'
+        run: python -m pip install --require-hashes -r desktop/requirements.lock
+      - working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - run: python desktop/build.py --flavor ${{ matrix.flavor }} --skip-frontend --output dist/release
+      - if: runner.os != 'Linux' || matrix.flavor == 'cli'
+        run: python scripts/smoke_package.py --directory dist/release --report dist/smoke.json
+      - if: runner.os == 'Linux' && matrix.flavor == 'gui'
+        run: |
+          xvfb-run -a sh -c 'stalonetray & sleep 2; EFDRR_REQUIRE_TRAY=1 python scripts/smoke_package.py --directory dist/release --report dist/smoke.json'
+          xvfb-run -a python scripts/smoke_package.py --directory dist/release --no-tray --report dist/smoke-no-tray.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.runner }}-${{ matrix.flavor }}
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-${{ matrix.runner }}-${{ matrix.flavor }}
+          path: dist/smoke*.json
+          retention-days: 1

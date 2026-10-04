@@ -16,7 +16,11 @@ Thumbs.db
 backend/.env
 backend/*.env
 backend/config.yaml
+config.yaml
+data/
+downloads/
 docker-compose.yml
+docker-compose.build.yml
 
 # --- Python ---
 __pycache__/

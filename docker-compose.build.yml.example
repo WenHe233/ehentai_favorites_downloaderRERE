@@ -1,6 +1,8 @@
 services:
   efdrr:
-    image: ghcr.io/wenhe233/ehentai_favorites_downloaderrere:1.1.0
+    build:
+      context: .
+      dockerfile: Dockerfile
     restart: unless-stopped
     ports:
       - "8080:8000"

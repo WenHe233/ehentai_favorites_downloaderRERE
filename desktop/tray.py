@@ -1,135 +1,114 @@
-"""
-System tray icon manager for the desktop GUI.
-
-Provides:
-- Tray icon with right-click menu (show window / open downloads / open config / quit)
-- Double-click tray icon to restore window
-- Close-button interception: prompt user to minimize-to-tray or quit
-"""
-
+"""Native tray integration, sharing the GUI event loop where required."""
 import os
 import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Optional
 
-import pystray
-from PIL import Image
-
-if TYPE_CHECKING:
-    import webview
-
-
-def _load_icon() -> Image.Image:
-    """Load the application icon, falling back to a generated one."""
-    # Try loading from bundled resources or dev location
-    candidates = []
-    if getattr(sys, "frozen", False):
-        candidates.append(Path(sys._MEIPASS) / "icon.ico")  # type: ignore[attr-defined]
-    candidates.append(Path(__file__).parent / "icon.ico")
-
-    for path in candidates:
-        if path.exists():
-            return Image.open(path)
-
-    # Fallback: generate a simple colored icon
-    img = Image.new("RGB", (64, 64), color=(70, 130, 180))
-    return img
-
+def open_path(path):
+    if os.name == "nt":
+        os.startfile(str(path))
+    else:
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(path)])
 
 class TrayManager:
-    """Manages the system tray icon and its interactions with the pywebview window."""
+    def __init__(self, window, on_quit, downloads_dir, config_path, icon_path, disabled=False):
+        self.window, self.on_quit = window, on_quit
+        self.downloads_dir, self.config_path = downloads_dir, config_path
+        self.icon_path = Path(icon_path)
+        if not self.icon_path.is_file():
+            raise FileNotFoundError(self.icon_path)
+        self.disabled, self.available, self._quitting = disabled, False, False
+        self._icon = None
 
-    def __init__(
-        self,
-        window: "webview.Window",
-        on_quit: Callable[[], None],
-        downloads_dir: Optional[Path] = None,
-        config_path: Optional[Path] = None,
-    ):
-        self._window = window
-        self._on_quit = on_quit
-        self._downloads_dir = downloads_dir
-        self._config_path = config_path
-        self._icon: Optional[pystray.Icon] = None
-        self._thread: Optional[threading.Thread] = None
-        self._quitting = False
+    def prepare(self):
+        if self.disabled or sys.platform.startswith("linux"):
+            return
+        import pystray
+        from PIL import Image
+        self._icon = pystray.Icon("EFDRR", Image.open(self.icon_path), "EFDRR", pystray.Menu(
+            pystray.MenuItem("显示窗口", lambda: self.window.show(), default=True),
+            pystray.MenuItem("打开下载目录", lambda: open_path(self.downloads_dir)),
+            pystray.MenuItem("打开配置文件", lambda: open_path(self.config_path)),
+            pystray.MenuItem("退出程序", self.on_quit),
+        ))
+        if sys.platform == "darwin":
+            self._icon.run_detached()
+            self.available = True
 
-    def start(self) -> None:
-        """Start the tray icon in a background thread."""
-        menu = pystray.Menu(
-            pystray.MenuItem("显示窗口", self._show_window, default=True),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("打开下载目录", self._open_downloads),
-            pystray.MenuItem("打开配置文件", self._open_config),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("退出程序", self._quit),
-        )
+    def _qt_call(self, callback):
+        from webview.platforms.qt import BrowserView
+        done, errors = threading.Event(), []
+        def invoke():
+            try:
+                callback()
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                done.set()
+        BrowserView.instances[self.window.uid].create_window_trigger.emit(invoke)
+        if not done.wait(10):
+            raise RuntimeError("Qt tray initialization timed out")
+        if errors:
+            raise errors[0]
 
-        self._icon = pystray.Icon(
-            name="ehentai_downloader",
-            icon=_load_icon(),
-            title="Ehentai Favorites Downloader RERE",
-            menu=menu,
-        )
+    def start(self):
+        if self.disabled:
+            return
+        if sys.platform.startswith("linux"):
+            def create():
+                from PySide6.QtGui import QIcon
+                from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+                QApplication.instance().setDesktopFileName("efdrr")
+                if not QSystemTrayIcon.isSystemTrayAvailable():
+                    return
+                self._menu = QMenu()
+                self._menu.addAction("显示窗口", self.window.show)
+                self._menu.addAction("打开下载目录", lambda: open_path(self.downloads_dir))
+                self._menu.addAction("打开配置文件", lambda: open_path(self.config_path))
+                self._menu.addAction("退出程序", self.on_quit)
+                self._icon = QSystemTrayIcon(QIcon(str(self.icon_path)))
+                self._icon.setToolTip("EFDRR")
+                self._icon.setContextMenu(self._menu)
+                self._icon.activated.connect(lambda reason: self.window.show() if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
+                self._icon.show()
+                self.available = True
+            self._qt_call(create)
+        elif sys.platform == "win32":
+            ready = threading.Event()
+            def setup(icon):
+                icon.visible = True
+                self.available = True
+                ready.set()
+            threading.Thread(target=self._icon.run, kwargs={"setup": setup}, daemon=True).start()
+            if not ready.wait(10):
+                raise RuntimeError("Windows tray initialization timed out")
 
-        self._thread = threading.Thread(target=self._icon.run, daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        """Stop and remove the tray icon."""
-        if self._icon is not None:
+    def stop(self):
+        if self._icon and not sys.platform.startswith("linux"):
             self._icon.stop()
+        self.available = False
 
-    def handle_window_closing(self) -> bool:
-        """
-        Called when the user clicks the window close button.
-        Shows a JS confirm dialog asking whether to minimize or quit.
-
-        Returns:
-            True  -> allow the window to close (quit)
-            False -> prevent closing (minimize to tray instead)
-        """
-        if self._quitting:
+    def handle_window_closing(self):
+        if self._quitting or not self.available:
             return True
-        # NOTE: We must NOT call window.evaluate_js() here because the
-        # closing callback runs on the GUI thread and evaluate_js also
-        # dispatches to the GUI thread, causing a deadlock.
-        # Use a native Windows MessageBox instead.
-        import ctypes
-        MB_OKCANCEL = 0x01
-        MB_ICONQUESTION = 0x20
-        MB_TOPMOST = 0x40000
-        IDOK = 1
-        result = ctypes.windll.user32.MessageBoxW(
-            0,
-            "确定 = 退出程序\n取消 = 最小化到系统托盘（后台继续运行）",
-            "Ehentai Favorites Downloader RERE",
-            MB_OKCANCEL | MB_ICONQUESTION | MB_TOPMOST,
-        )
-
-        if result == IDOK:
-            # User chose "OK" = quit
+        prompt = "退出程序？选择取消可隐藏到托盘，继续后台下载。"
+        if sys.platform == "win32":
+            import ctypes
+            quit_now = ctypes.windll.user32.MessageBoxW(0, prompt, "EFDRR", 0x01 | 0x20 | 0x40000) == 1
+        elif sys.platform == "darwin":
+            from AppKit import NSAlert, NSAlertFirstButtonReturn
+            alert = NSAlert.alloc().init()
+            alert.setMessageText_("EFDRR")
+            alert.setInformativeText_(prompt)
+            alert.addButtonWithTitle_("退出")
+            alert.addButtonWithTitle_("进入托盘")
+            quit_now = alert.runModal() == NSAlertFirstButtonReturn
+        else:
+            from PySide6.QtWidgets import QMessageBox
+            quit_now = QMessageBox.question(None, "EFDRR", prompt, QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel) == QMessageBox.StandardButton.Ok
+        if quit_now:
             self._quitting = True
             return True
-        else:
-            # User chose "Cancel" = minimize to tray
-            self._window.hide()
-            return False
-
-    # ── Menu actions ─────────────────────────────────────────────
-
-    def _show_window(self, icon: pystray.Icon = None, item: pystray.MenuItem = None) -> None:
-        self._window.show()
-
-    def _open_downloads(self, icon: pystray.Icon = None, item: pystray.MenuItem = None) -> None:
-        if self._downloads_dir and self._downloads_dir.exists():
-            os.startfile(str(self._downloads_dir))
-
-    def _open_config(self, icon: pystray.Icon = None, item: pystray.MenuItem = None) -> None:
-        if self._config_path and self._config_path.exists():
-            os.startfile(str(self._config_path))
-
-    def _quit(self, icon: pystray.Icon = None, item: pystray.MenuItem = None) -> None:
-        self._on_quit()
+        self.window.hide()
+        return False

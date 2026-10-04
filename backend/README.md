@@ -65,20 +65,14 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 ### Docker 镜像
 
-仓库已提供：
+正式镜像同时提供网页、API 和 SSE：
 
-- [Dockerfile](./Dockerfile)
-- 根目录 [docker-compose.yml.example](../docker-compose.yml.example)
+```bash
+docker pull ghcr.io/wenhe233/ehentai_favorites_downloaderrere:1.1.0
+```
 
-容器内路径约定：
-
-- `/app/config.yaml`
-- `/app/data`
-- `/app/downloads`
-
-Compose 示例将宿主机 backend 目录挂载到 /app/userdata，并设置 EFDRR_DATA_ROOT。
-这样仍使用原来的 backend/config.yaml、backend/data 和 backend/downloads，同时允许配置文件原子替换。
-升级旧 Compose 时，应采用新的目录挂载方式，避免单独绑定 config.yaml 导致文件替换失败。
+默认使用根目录 Dockerfile 和 docker-compose.yml.example。数据目录为 /app/userdata，挂载整个 backend 目录以支持配置原子保存。
+旧三服务部署的迁移步骤见 [部署说明](../docs/deployment.md)。backend/Dockerfile 保留为仅后端的开发构建入口。
 
 ## 运行维护
 

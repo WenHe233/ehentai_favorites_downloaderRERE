@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Library, ArrowRight } from "lucide-react";
+import { ArrowRight } from "lucide-react";
+import AppBrandIcon from "@/components/AppBrandIcon";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -23,9 +24,7 @@ export default function Login({
       </div>
       <div className="w-full max-w-sm space-y-8">
         <div>
-          <div className="mb-6 inline-flex rounded-xl bg-primary p-3 text-primary-foreground">
-            <Library className="size-7" />
-          </div>
+          <AppBrandIcon size={64} className="mb-6" />
           <p className="text-xs font-medium tracking-[.2em] text-muted-foreground">
             EFDRR
           </p>

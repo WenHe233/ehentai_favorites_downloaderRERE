@@ -1,4 +1,6 @@
--r ../backend/requirements.in
+-c ../backend/requirements.txt
 pywebview==6.2.1
-pystray==0.19.5
+pystray==0.19.5 ; sys_platform != 'linux'
 Pillow==12.3.0
+PySide6==6.10.2 ; sys_platform == 'linux'
+qtpy==2.4.3 ; sys_platform == 'linux'

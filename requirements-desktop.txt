@@ -1,5 +1,2 @@
-# Extra dependencies for the desktop GUI build.
-# Install alongside backend/requirements.txt:
-#   pip install -r backend/requirements.txt -r requirements-desktop.txt
-
--r desktop/requirements-windows.lock
+-r backend/requirements.txt
+-r desktop/requirements.lock

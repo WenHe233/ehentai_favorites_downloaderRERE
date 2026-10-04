@@ -1,6 +1,7 @@
 """Exercise a built image, including persisted configuration across recreation."""
 import argparse
 import json
+import os
 import subprocess
 import tempfile
 import uuid
@@ -20,7 +21,8 @@ def main():
         data = Path(temp).resolve()
         for iteration in range(2):
             name = "efdrr-test-" + uuid.uuid4().hex[:12]
-            docker("run", "-d", "--name", name, "--platform", args.platform,
+            identity = ["--user", f"{os.getuid()}:{os.getgid()}"] if os.name != "nt" else []
+            docker("run", "-d", "--name", name, "--platform", args.platform, *identity,
                 "-p", "127.0.0.1::8000", "-v", str(data) + ":/app/userdata", args.image)
             try:
                 port = docker("port", name, "8000/tcp").rsplit(":",1)[1]

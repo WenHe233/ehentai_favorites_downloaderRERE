@@ -1,5 +1,8 @@
 import hashlib
+import json
+import struct
 import sys
+import zipfile
 from pathlib import Path
 import httpx
 import pytest
@@ -7,6 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from github_release import publish
 from validate_package import release_assets, TARGETS, FLAVORS
+from validate_package import validate
 from live_acceptance import read_cookies
 
 def test_cookie_file_accepts_existing_multiline_layout(tmp_path):
@@ -96,3 +100,51 @@ def test_release_requires_all_ten_packages(tmp_path,monkeypatch):
     next(iter(metadata.values()))["commit"]="other"
     with pytest.raises(ValueError,match="commit/version"):
         release_assets(tmp_path,"1.1.0","commit")
+
+
+def package_fixture(path, omit=None, extra=None, wrong_arch=False):
+    binary = bytearray(128)
+    binary[:2] = b"MZ"
+    struct.pack_into("<I", binary, 60, 80)
+    binary[80:84] = b"PE\0\0"
+    struct.pack_into("<H", binary, 84, 0x14c if wrong_arch else 0x8664)
+    icon = b"fixture-icon"
+    info = dict(version="1.1.0",commit="commit",platform="windows",arch="x64",flavor="gui",
+        resources="_internal",executable="EFDRR.exe",icons={ext:hashlib.sha256(icon).hexdigest() for ext in ("ico","png","icns")})
+    entries = {"BUILD-INFO.json":json.dumps(info).encode(),"VERSION":b"1.1.0", "_internal/VERSION":b"1.1.0",
+        "EFDRR.exe":binary,"README.txt":b"readme","THIRD_PARTY_NOTICES.txt":b"notices",
+        "_internal/frontend/dist/index.html":b"html","_internal/frontend/dist/efdrr-icon.svg":b"svg",
+        "_internal/backend/config.yaml.example":b"example"}
+    entries.update({"_internal/desktop/icon."+ext:icon for ext in ("ico","png","icns")})
+    if omit:
+        entries.pop(omit)
+    if extra:
+        entries[extra] = b"unexpected"
+    with zipfile.ZipFile(path,"w") as archive:
+        for name,content in entries.items():
+            archive.writestr("EFDRR/"+name,content)
+
+
+@pytest.mark.parametrize("omitted",["_internal/desktop/icon.ico","_internal/frontend/dist/index.html"])
+def test_package_requires_brand_and_frontend(tmp_path,omitted):
+    path=tmp_path/"package.zip"
+    package_fixture(path,omit=omitted)
+    with pytest.raises(ValueError,match="Missing package entry"):
+        validate(path)
+
+
+@pytest.mark.parametrize("extra",["../escape",".env","config.yaml","data/app.db","data/app.log"])
+def test_package_rejects_runtime_data_and_traversal(tmp_path,extra):
+    path=tmp_path/"package.zip"
+    package_fixture(path,extra=extra)
+    with pytest.raises(ValueError):
+        validate(path)
+
+
+def test_package_checks_binary_architecture(tmp_path):
+    path=tmp_path/"package.zip"
+    package_fixture(path)
+    assert validate(path)["arch"]=="x64"
+    package_fixture(path,wrong_arch=True)
+    with pytest.raises(ValueError,match="architecture"):
+        validate(path)

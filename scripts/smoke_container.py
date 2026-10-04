@@ -9,7 +9,7 @@ from pathlib import Path
 from smoke_package import wait_ready, verify_http
 
 def docker(*args):
-    return subprocess.check_output(["docker", *map(str,args)], text=True).strip()
+    return subprocess.check_output(["docker", *map(str,args)], text=True, stderr=subprocess.STDOUT).strip()
 
 def main():
     parser = argparse.ArgumentParser()

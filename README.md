@@ -4,6 +4,26 @@ EFDRR 提供 E-Hentai / ExHentai 收藏夹同步、下载队列、断点恢复�
 
 项目地址：[GitHub](https://github.com/WenHe233/ehentai_favorites_downloaderRERE) · [下载发行包](https://github.com/WenHe233/ehentai_favorites_downloaderRERE/releases)
 
+## 界面预览
+
+### 总览
+
+同步收藏夹、添加下载链接，查看实时进度和队列状态。
+
+![总览：收藏夹同步、下载队列与实时进度](docs/screenshots/overview.jpg)
+
+### 下载任务
+
+搜索和筛选任务，查看下载结果，批量重试或删除记录。
+
+![下载任务：状态筛选、下载进度与批量操作](docs/screenshots/download-tasks.jpg)
+
+### 下载设置
+
+设置下载模式、画质、并发数、重试次数和文件命名规则。
+
+![下载设置：下载策略、输出路径与文件命名](docs/screenshots/download-settings.jpg)
+
 ## 选择运行方式
 
 | 使用场景 | 选择 |

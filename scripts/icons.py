@@ -1,4 +1,4 @@
-"""Generate all desktop icons from the favicon SVG, or verify checked-in bytes."""
+"""Generate desktop icons or compare pixels (PNG compression varies by OS)."""
 import argparse
 import io
 from pathlib import Path
@@ -7,6 +7,17 @@ from PIL import Image
 import resvg_py
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def equivalent(actual, expected, extension):
+    with Image.open(io.BytesIO(actual)) as left, Image.open(io.BytesIO(expected)) as right:
+        if extension == "ico":
+            sizes = right.ico.sizes()
+            return left.ico.sizes() == sizes and all(left.ico.getimage(size).convert("RGBA").tobytes() == right.ico.getimage(size).convert("RGBA").tobytes() for size in sizes)
+        if extension == "icns":
+            sizes = right.info["sizes"]
+            return set(left.info["sizes"]) == set(sizes) and all(left.icns.getimage(size).convert("RGBA").tobytes() == right.icns.getimage(size).convert("RGBA").tobytes() for size in sizes)
+        return left.size == right.size and left.convert("RGBA").tobytes() == right.convert("RGBA").tobytes()
 
 
 def generated():
@@ -27,7 +38,7 @@ if __name__ == "__main__":
     for name, content in generated().items():
         path = ROOT / "desktop" / name
         if args.check:
-            if not path.exists() or path.read_bytes() != content:
+            if not path.exists() or not equivalent(path.read_bytes(), content, path.suffix[1:]):
                 raise SystemExit(f"图标不同步，请运行 python scripts/icons.py：{name}")
         else:
             path.write_bytes(content)

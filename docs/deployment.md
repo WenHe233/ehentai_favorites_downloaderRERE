@@ -31,7 +31,7 @@ Linux 以 Ubuntu 24.04 为基线。GUI 使用随包的 PySide6 WebEngine，需�
 Ubuntu 所需系统库可安装：
 
 ```bash
-sudo apt install libegl1 libopengl0 libnss3 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0 libasound2t64
+sudo apt install libegl1 libopengl0 libnss3 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0 libasound2t64 libopus0 libminizip1t64 libpulse0
 ```
 
 不要以 root 运行桌面版。桌面环境不提供系统托盘时，关闭窗口即退出。

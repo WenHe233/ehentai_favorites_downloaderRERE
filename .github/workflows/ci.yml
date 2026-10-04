@@ -1,0 +1,94 @@
+name: Verify and release
+on:
+  push:
+    branches: [master, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      publish: ${{ steps.release.outputs.publish }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install httpx==0.28.1
+      - id: version
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: python scripts/github_release.py --check-change
+      - id: release
+        env:
+          CHANGED: ${{ steps.version.outputs.changed }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/heads/master && "$CHANGED" == true && "$GITHUB_EVENT_NAME" != pull_request ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: |
+          pip install --require-hashes -r backend/requirements.txt
+          pip install -r backend/requirements-dev.txt
+          pip install --require-hashes -r desktop/build-requirements.lock
+          python scripts/icons.py --check
+          python -m pytest -q
+      - working-directory: frontend
+        run: |
+          npm ci
+          npm run lint
+          npm test
+          npm run build
+          npx playwright install --with-deps chromium
+          npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-report
+          path: frontend/playwright-report
+          retention-days: 1
+  packages:
+    needs: verify
+    uses: ./.github/workflows/packages.yml
+  images:
+    needs: [prepare, verify]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/images.yml
+    with:
+      publish: ${{ needs.prepare.outputs.publish == 'true' }}
+      version: ${{ needs.prepare.outputs.version }}
+  release:
+    needs: [prepare, packages, images]
+    if: needs.prepare.outputs.publish == 'true'
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/release.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}

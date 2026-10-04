@@ -18,7 +18,7 @@
 这适合：
 
 - 使用 Nginx / Caddy 等反代后只暴露一个端口
-- Docker Compose 中通过统一网关部署
+- CLI、GUI 和单容器部署中由后端提供网页
 
 如果你想手动指定后端地址，可以在启动或构建前设置：
 
@@ -41,7 +41,7 @@ npm run lint
 npm run build
 ```
 
-## Docker 构建
+## 仅前端开发镜像
 
 仓库已提供：
 
@@ -63,7 +63,7 @@ npm run build
 
 ## 发布建议
 
-- 生产环境建议通过根目录 `docker-compose.yml.example` 搭配统一网关部署
+- 生产环境使用根目录 `docker-compose.yml.example` 的 GHCR 单容器镜像，网页已内置
 - 不建议直接暴露 Vite 开发服务器端口
 - 如果需要直连调试后端，可通过 `VITE_API_BASE_URL` 手动覆盖
 
@@ -73,3 +73,5 @@ npm run build
 界面版本由根目录 VERSION 在构建时注入。
 单元测试运行 npm test，浏览器测试先运行 npm run build，再运行 npm run test:e2e。
 Docker 构建需以仓库根目录为上下文：docker build -f frontend/Dockerfile .
+
+正式发布与图标生成见 [构建说明](../docs/releasing.md)。AppBrandIcon 和 favicon 统一引用 public/efdrr-icon.svg。

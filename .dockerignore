@@ -13,6 +13,9 @@ frontend/dist
 frontend/test-results
 frontend/playwright-report
 backend/config.yaml
+config.yaml
+data
+downloads
 backend/data
 backend/downloads
 docker-compose.yml

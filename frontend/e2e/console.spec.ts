@@ -56,9 +56,24 @@ test('settings save the new filename limit and cookie refresh uses one API prefi
 })
 test('authenticated installation opens the login page first',async({page})=>{
  await setup(page,true);await page.goto('/')
+ await expect(page.locator('[data-brand="efdrr"]')).toBeVisible()
+ await expect(page.locator('[data-brand="efdrr"]')).toHaveAttribute('src','/efdrr-icon.svg')
  await page.getByLabel('用户名',{exact:true}).fill('admin');await page.getByLabel('密码',{exact:true}).fill('test-password')
  await page.getByRole('button',{name:'登录',exact:true}).click()
  await expect(page.getByRole('heading',{name:'收藏与下载',exact:true})).toBeVisible()
+})
+
+test('brand icon and favicon are shared across navigation surfaces',async({page},testInfo)=>{
+ await setup(page);await page.goto('/')
+ await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href','/efdrr-icon.svg')
+ const favicon=await page.request.get('/efdrr-icon.svg');expect(favicon.ok()).toBeTruthy()
+ const brands=page.locator('[data-brand="efdrr"]:visible')
+ await expect(brands.first()).toBeVisible()
+ expect(await brands.first().evaluate((element:HTMLImageElement)=>element.complete&&element.naturalWidth>0)).toBeTruthy()
+ if(testInfo.project.name==='mobile'){
+   await page.getByRole('button',{name:'打开导航'}).click()
+   await expect(page.getByRole('dialog').locator('[data-brand="efdrr"]')).toBeVisible()
+ }
 })
 
 test('scrollbars, native fields and notifications follow the selected theme',async({page},testInfo)=>{

@@ -1,7 +1,6 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
-  Library,
   ListTodo,
   Settings2,
   LogOut,
@@ -19,6 +18,7 @@ import {
 import ThemeToggle from "./ThemeToggle";
 import ApiConnectionSettings from "./ApiConnectionSettings";
 import { cn } from "@/lib/utils";
+import AppBrandIcon from "./AppBrandIcon";
 const nav = [
   { to: "/", label: "总览", icon: LayoutDashboard },
   { to: "/galleries", label: "下载任务", icon: ListTodo },
@@ -60,9 +60,7 @@ export default function AppLayout({
     <div className="min-h-svh">
       <aside className="fixed inset-y-0 left-0 z-20 hidden w-56 flex-col border-r bg-card px-4 py-6 md:flex">
         <a href="/" className="mb-10 flex items-center gap-3 px-2">
-          <div className="rounded-lg bg-primary p-2 text-primary-foreground">
-            <Library className="size-5" />
-          </div>
+          <AppBrandIcon size={40} />
           <div>
             <div className="font-semibold tracking-wider">EFDRR</div>
             <div className="mt-0.5 text-[11px] text-muted-foreground">
@@ -101,11 +99,12 @@ export default function AppLayout({
               </Button>
             </SheetTrigger>
             <SheetContent side="left" className="w-64 p-6">
-              <SheetTitle>EFDRR</SheetTitle>
+              <SheetTitle className="flex items-center gap-2"><AppBrandIcon size={32} />EFDRR</SheetTitle>
               <SheetDescription>收藏与下载管理</SheetDescription>
               <Navigation />
             </SheetContent>
           </Sheet>
+          <a href="/" aria-label="EFDRR 首页" className="md:hidden"><AppBrandIcon size={32} /></a>
           <span className="text-sm text-muted-foreground">
             工作空间 <span className="mx-2 opacity-40">/</span>{" "}
             <span className="text-foreground">

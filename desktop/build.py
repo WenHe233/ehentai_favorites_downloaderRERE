@@ -60,6 +60,7 @@ def build(flavor, output, skip_frontend=False):
         work = Path(tmp)
         env = dict(os.environ, EFDRR_DATA_ROOT=str(work / "isolated-data"), EFDRR_RESOURCE_ROOT=str(ROOT))
         command = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
+            "--python-option", "X utf8", "--python-option", "u",
             "--name", name, "--distpath", work / "dist", "--workpath", work / "work",
             "--specpath", work, "--paths", ROOT / "backend", "--paths", ROOT / "desktop",
             "--collect-submodules", "app", "--hidden-import", "sqlalchemy.dialects.sqlite.aiosqlite",

@@ -9,6 +9,7 @@ class SPAStaticFiles(StaticFiles):
             return await super().get_response(path, scope)
         except HTTPException as exc:
             # Only client routes receive the SPA shell. Missing API/assets remain 404.
-            if exc.status_code == 404 and scope["method"] in {"GET", "HEAD"} and not path.startswith(("api/", "assets/")) and not Path(path).suffix:
+            normalized = path.replace("\\", "/").lstrip("/")
+            if exc.status_code == 404 and scope["method"] in {"GET", "HEAD"} and not normalized.startswith(("api/", "assets/")) and not Path(normalized).suffix:
                 return await super().get_response("index.html", scope)
             raise

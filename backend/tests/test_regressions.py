@@ -131,3 +131,14 @@ def test_unicode_admin_credentials():
     settings.reload(force=True)
     assert authenticate_admin("管理员", "密码测试")
     assert authenticate_admin("管理员", "错误") is None
+
+
+@pytest.mark.parametrize("path", ["api/v1/missing", "api\\v1\\missing", "assets/missing", "assets\\missing"])
+async def test_spa_never_serves_api_or_assets_as_html(tmp_path, path):
+    from app.core.spa import SPAStaticFiles
+    from starlette.exceptions import HTTPException
+    (tmp_path / "index.html").write_text("<html>shell</html>")
+    static = SPAStaticFiles(directory=tmp_path, html=True)
+    with pytest.raises(HTTPException) as error:
+        await static.get_response(path, {"method": "GET"})
+    assert error.value.status_code == 404

@@ -230,7 +230,7 @@ def _render_commented_config(payload: Dict[str, Any]) -> str:
 
     lines.extend([
         "",
-        "# 本地数据目录设置。相对路径会以 backend 目录为基准。",
+        "# 本地数据目录设置。相对路径以配置文件所在的数据根目录为基准。",
         "paths:",
         "  # 数据库、日志等运行数据的目录。",
     ])
@@ -306,7 +306,7 @@ def _render_commented_config(payload: Dict[str, Any]) -> str:
     lines.extend(_render_key_value("max_concurrent_downloads", cfg["download"]["max_concurrent_downloads"], 1))
     lines.append("  # 单个下载任务失败后的最大重试次数。")
     lines.extend(_render_key_value("max_retries", cfg["download"]["max_retries"], 1))
-    lines.append("  # 下载输出模板。相对路径以 backend 目录为基准，允许使用子目录和文件名占位符。")
+    lines.append("  # 下载输出模板。相对路径以配置文件所在的数据根目录为基准，允许使用子目录和文件名占位符。")
     lines.extend(_render_key_value("output_template", cfg["download"]["output_template"], 1))
     lines.append("  # 文件冲突处理：rename 自动追加 _1；overwrite 直接覆盖并清理同任务的临时残留。")
     lines.extend(_render_key_value("conflict_strategy", cfg["download"]["conflict_strategy"], 1))

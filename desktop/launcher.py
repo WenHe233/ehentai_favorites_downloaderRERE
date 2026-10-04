@@ -189,10 +189,27 @@ def main():
                     raise RuntimeError("品牌图标未加载")
                 if sys.platform == "win32":
                     from System import Action
+                    from System.Drawing import Icon
                     def inspect_icon():
-                        report["window_icon"] = window.native.Icon is not None
+                        expected = Icon(str(ROOT / "desktop/icon.ico")).ToBitmap()
+                        actual = window.native.Icon.ToBitmap()
+                        report["window_icon"] = actual.Size == expected.Size and all(
+                            actual.GetPixel(x, y).ToArgb() == expected.GetPixel(x, y).ToArgb()
+                            for x in range(expected.Width) for y in range(expected.Height))
+                        actual.Dispose()
+                        expected.Dispose()
                     window.native.Invoke(Action(inspect_icon))
-                    if not report["window_icon"] or (not args.no_tray and not tray.available):
+                    app_id = ctypes.c_wchar_p()
+                    shell = ctypes.WinDLL("shell32")
+                    shell.GetCurrentProcessExplicitAppUserModelID.argtypes = [ctypes.POINTER(ctypes.c_wchar_p)]
+                    shell.GetCurrentProcessExplicitAppUserModelID.restype = ctypes.c_long
+                    result = shell.GetCurrentProcessExplicitAppUserModelID(ctypes.byref(app_id))
+                    report["app_id"] = app_id.value if result == 0 else None
+                    if app_id:
+                        ole = ctypes.WinDLL("ole32")
+                        ole.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+                        ole.CoTaskMemFree(ctypes.cast(app_id, ctypes.c_void_p))
+                    if not report["window_icon"] or report["app_id"] != "WenHe233.EFDRR.GUI" or (not args.no_tray and not tray.available):
                         raise RuntimeError("窗口或托盘图标缺失")
                 for route, expected in (("/galleries", "下载任务"), ("/settings", "设置"), ("/", "收藏与下载")):
                     window.load_url(f"http://127.0.0.1:{server.port}{route}")
